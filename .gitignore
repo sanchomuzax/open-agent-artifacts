@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+.DS_Store
+node_modules/
+dist/
+build/
+coverage.xml
+.coverage
+htmlcov/
+
+# Runtime and private material
+*.db
+*.db-*
+data/
+runtime/
+logs/
+backups/
+secrets/
+*.log
+*.pem
+*.key
+
+# Never embed the private companion project
+open-agent-artifacts-private/
