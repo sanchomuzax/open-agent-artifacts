@@ -60,7 +60,7 @@ jobs:
           fi
           mkdir -p dist
           git archive --format=tar.gz --prefix="open-agent-artifacts-${VERSION}/" "$GITHUB_SHA" > "dist/open-agent-artifacts-${VERSION}.tar.gz"
-          sha256sum "dist/open-agent-artifacts-${VERSION}.tar.gz" > "dist/open-agent-artifacts-${VERSION}.tar.gz.sha256"
+          (cd dist && sha256sum "open-agent-artifacts-${VERSION}.tar.gz" > "open-agent-artifacts-${VERSION}.tar.gz.sha256")
       - name: Create GitHub Release
         if: steps.scope.outputs.product == 'true'
         env:
