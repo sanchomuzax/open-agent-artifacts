@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           changed="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
-          if printf '%s\n' "$changed" | grep -Eq '^(src/|web/|scripts/|pyproject\.toml$|uv\.lock$)'; then
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || printf '%s\n' "$changed" | grep -Eq '^(src/|web/|scripts/|pyproject\.toml$|uv\.lock$)'; then
             echo "product=true" >> "$GITHUB_OUTPUT"
           else
             echo "product=false" >> "$GITHUB_OUTPUT"
