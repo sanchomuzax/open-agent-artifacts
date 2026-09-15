@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 — 2026-09-15
+
+- Fix installed deployments to resolve the static web assets from the working directory.
+- Pass the explicit static asset directory in the hardened systemd template.
+
 ## 0.1.4 — 2026-09-15
 
 - Add an in-browser line diff for comparing an older version with the current version.

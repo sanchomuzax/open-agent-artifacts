@@ -250,7 +250,8 @@ def create_server(
 ) -> ArtifactHTTPServer:
     store = Store(db_path)
     if static_dir is None:
-        static_dir = Path(__file__).resolve().parents[2] / "web"
+        working_directory_web = Path.cwd() / "web"
+        static_dir = working_directory_web if working_directory_web.is_dir() else Path(__file__).resolve().parents[2] / "web"
     return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir))
 
 
@@ -260,8 +261,9 @@ def main() -> None:
     parser.add_argument("--host", default=os.environ.get("OAA_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("OAA_PORT", "8765")))
     parser.add_argument("--api-token", default=os.environ.get("OAA_API_TOKEN"))
+    parser.add_argument("--static-dir", default=os.environ.get("OAA_STATIC_DIR"))
     args = parser.parse_args()
-    server = create_server(Path(args.db).expanduser(), args.host, args.port, args.api_token)
+    server = create_server(Path(args.db).expanduser(), args.host, args.port, args.api_token, args.static_dir)
     print(f"Open Agent Artifacts listening on http://{args.host}:{args.port}")
     try:
         server.serve_forever()

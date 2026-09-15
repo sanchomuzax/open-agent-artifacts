@@ -9,7 +9,7 @@ User=agent-artifacts
 Group=agent-artifacts
 WorkingDirectory=/opt/open-agent-artifacts
 EnvironmentFile=-/etc/open-agent-artifacts/env
-ExecStart=/opt/open-agent-artifacts/.venv/bin/oaa-server --db /var/lib/open-agent-artifacts/artifacts.db --host 127.0.0.1 --port 8765
+ExecStart=/opt/open-agent-artifacts/.venv/bin/oaa-server --db /var/lib/open-agent-artifacts/artifacts.db --host 127.0.0.1 --port 8765 --static-dir /opt/open-agent-artifacts/web
 Restart=on-failure
 RestartSec=5
 
