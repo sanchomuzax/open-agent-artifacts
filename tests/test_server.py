@@ -156,7 +156,7 @@ def test_static_catalog_shell_is_served_without_external_scripts(running_server)
     assert response.status == 200
     assert "Open Agent Artifacts" in html
     assert 'src="/app.js"' in html
-    assert 'href="/project-description.html"' in html
+    assert 'href="/"' in html
     assert 'id="cards-view"' in html
     assert 'id="new-version-form"' in html
     assert 'id="comments-toggle"' in html

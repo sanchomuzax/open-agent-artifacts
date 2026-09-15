@@ -260,6 +260,18 @@ def create_server(
     return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir))
 
 
+def sync_project_description(store: Store, static_dir: str | Path) -> dict[str, Any] | None:
+    """Keep the rendered project page represented as a canonical artifact."""
+    description_path = Path(static_dir) / "project-description.html"
+    if not description_path.is_file():
+        return None
+    return store.ensure_project_description(
+        "Open Agent Artifacts — Project description",
+        description_path.read_text(encoding="utf-8"),
+        "release",
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Open Agent Artifacts API")
     parser.add_argument("--db", default=os.environ.get("OAA_DB", "~/.local/share/open-agent-artifacts/artifacts.db"))
@@ -269,6 +281,7 @@ def main() -> None:
     parser.add_argument("--static-dir", default=os.environ.get("OAA_STATIC_DIR"))
     args = parser.parse_args()
     server = create_server(Path(args.db).expanduser(), args.host, args.port, args.api_token, args.static_dir)
+    sync_project_description(server.store, server.static_dir)
     print(f"Open Agent Artifacts listening on http://{args.host}:{args.port}")
     try:
         server.serve_forever()

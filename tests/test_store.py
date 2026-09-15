@@ -96,6 +96,26 @@ def test_pinning_and_catalog_preview_are_persisted(tmp_path):
     assert unpinned["pinned"] is False
 
 
+def test_project_description_is_a_pinned_immutable_artifact(tmp_path):
+    store = make_store(tmp_path)
+    title = "Open Agent Artifacts — Project description"
+    first = store.ensure_project_description(title, "<html>v1</html>", "release")
+
+    assert first["title"] == title
+    assert first["pinned"] is True
+    assert first["kind"] == "html"
+    assert store.get_current_version(first["id"])["content"] == "<html>v1</html>"
+
+    unchanged = store.ensure_project_description(title, "<html>v1</html>", "release")
+    assert unchanged["id"] == first["id"]
+    assert len(store.list_versions(first["id"])) == 1
+
+    updated = store.ensure_project_description(title, "<html>v2</html>", "release")
+    assert updated["id"] == first["id"]
+    assert store.get_current_version(first["id"])["content"] == "<html>v2</html>"
+    assert len(store.list_versions(first["id"])) == 2
+
+
 def test_comments_are_bound_to_version_and_events_are_audited(tmp_path):
     store = make_store(tmp_path)
     artifact = store.create_artifact("A report", "text", "content", "test")

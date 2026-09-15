@@ -264,6 +264,44 @@ class Store:
             )
             return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
 
+    def ensure_project_description(
+        self,
+        title: str,
+        content: str,
+        created_by: str = "release",
+    ) -> dict[str, Any]:
+        """Create or publish the canonical project-description artifact."""
+        title = _check_text(title, "title", 512)
+        content = _check_text(content, "content", MAX_CONTENT_BYTES)
+        existing = next(
+            (item for item in self.list_artifacts(include_archived=True) if item["title"] == title),
+            None,
+        )
+        if existing is None:
+            artifact = self.create_artifact(
+                title,
+                "html",
+                content,
+                created_by,
+                idempotency_key="system:project-description",
+            )
+            return self.set_pinned(artifact["id"], True)
+
+        artifact_id = existing["id"]
+        current = self.get_current_version(artifact_id)
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if current["content_hash"] != content_hash:
+            self.publish_version(
+                artifact_id,
+                content,
+                created_by,
+                expected_current_version_id=current["id"],
+                change_summary="Sync project description",
+                idempotency_key=f"system:project-description:{content_hash}",
+            )
+        artifact = self.get_artifact(artifact_id)
+        return artifact if artifact["pinned"] else self.set_pinned(artifact_id, True)
+
     def get_version(self, version_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             return _as_dict(self._get_version_row(connection, version_id))  # type: ignore[return-value]

@@ -143,6 +143,7 @@
   }
 
   function renderEmptyState() {
+    document.body.classList.remove("detail-mode");
     state.artifact = null;
     state.versions = [];
     state.version = null;
@@ -160,11 +161,18 @@
   }
 
   async function loadArtifact(id, updateHash = true) {
-    if (updateHash) history.replaceState(null, "", `#/artifact/${encodeURIComponent(id)}`);
+    if (updateHash) {
+      const nextHash = `#/artifact/${encodeURIComponent(id)}`;
+      if (location.hash !== nextHash) {
+        location.hash = nextHash;
+        return;
+      }
+    }
     try {
       state.artifact = await api(`/api/artifacts/${encodeURIComponent(id)}`);
       state.versions = await api(`/api/artifacts/${encodeURIComponent(id)}/versions`);
       const current = state.versions.find((item) => item.id === state.artifact.current_version_id) || state.versions[0];
+      document.body.classList.add("detail-mode");
       renderCatalog();
       renderDetailShell();
       await loadVersion(current.id);

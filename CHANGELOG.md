@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10 — 2026-09-15
+
+- Make the project description a canonical pinned HTML artifact synced at service startup.
+- Make artifact opening a separate workspace screen with a reliable home/back path.
+- Add list/card preview acceptance coverage and changelog-backed release-description validation.
+
 ## 0.1.9 — 2026-09-15
 
 - Add list/card catalog views with content previews.

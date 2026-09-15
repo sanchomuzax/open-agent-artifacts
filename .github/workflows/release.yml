@@ -50,6 +50,14 @@ jobs:
         run: |
           version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build release description from changelog
+        if: steps.scope.outputs.product == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          python scripts/release_notes.py --version "$VERSION" > dist/release-notes.md
+          test -s dist/release-notes.md
       - name: Build clean source archive
         if: steps.scope.outputs.product == 'true'
         env:
@@ -74,4 +82,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" "$GITHUB_SHA" -m "Release $tag"
           git push origin "$tag"
-          gh release create "$tag" dist/* --title "$tag" --generate-notes
+          gh release create "$tag" dist/open-agent-artifacts-"${VERSION}".tar.gz dist/open-agent-artifacts-"${VERSION}".tar.gz.sha256 --title "$tag" --notes-file dist/release-notes.md
+          body="$(gh release view "$tag" --json body --jq .body)"
+          printf '%s\n' "$body" | grep -Fq "## ${VERSION}"
+          printf '%s\n' "$body" | grep -Eq '^[[:space:]]*-[[:space:]]+[^[:space:]]'

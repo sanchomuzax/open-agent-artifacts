@@ -53,6 +53,9 @@ h3 { margin-bottom: 0; font-size: 1rem; }
 .token-form .button { width: 100%; margin-top: .6rem; }
 
 .workspace { display: grid; grid-template-columns: minmax(19rem, 25rem) minmax(0, 1fr); min-height: calc(100vh - 5.25rem); }
+body.detail-mode .catalog-panel { display: none; }
+body.detail-mode .workspace { display: block; }
+body.detail-mode .detail-panel { max-width: 1120px; margin: 0 auto; }
 .catalog-panel { padding: 1.15rem; border-right: 1px solid var(--line); background: rgba(17, 26, 35, .72); }
 .panel-heading, .card-heading, .detail-header, .artifact-item-head, .editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; }
 .panel-heading { margin-bottom: .9rem; }
