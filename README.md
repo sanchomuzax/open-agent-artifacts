@@ -6,7 +6,7 @@ The project provides a versioned catalog for agent-produced documents, code, dia
 
 ## Project description
 
-Read the [English / Hungarian project description with an EN/HU switch](web/project-description.html).
+Read the [English / Hungarian project description with an EN/HU switch](web/project-description.html). The live workspace root is the primary destination for artifact requests; GitHub is the source-code extra.
 
 ## Status
 

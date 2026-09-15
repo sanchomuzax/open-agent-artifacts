@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8 — 2026-09-15
+
+- Route every artifact request through the primary live workspace.
+- Clarify that GitHub is the source-code extra, not the artifact destination.
+
 ## 0.1.7 — 2026-09-15
 
 - Add a first-class project overview link to the main artifact workspace.

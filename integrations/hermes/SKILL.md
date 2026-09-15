@@ -1,7 +1,7 @@
 ---
 name: open-agent-artifacts
-# Use when the user asks to create, review, version, or collect feedback on an Open Agent Artifact.
-description: "Use when the user asks to create, review, version, or collect feedback on an Open Agent Artifact."
+# Use when creating, reviewing, versioning, or commenting on an Open Agent Artifact.
+description: "Use when creating or reviewing agent artifacts."
 version: 0.1.0
 metadata:
   hermes:
@@ -11,6 +11,12 @@ metadata:
 # Open Agent Artifacts
 
 This is a thin Hermes adapter for the agent-independent Open Agent Artifacts service. The service owns artifact storage, versions, comments, and the review UI. Hermes owns content generation and explicit feedback processing.
+
+## Primary routing rule
+
+Every artifact request must be published to the configured primary Open Agent Artifacts workspace. Do not return it only in chat, save it as an ad-hoc file, or place it in GitHub; GitHub is the source-code extra.
+
+Use the service API and return a verified stable link in the configured workspace. The link must use the returned artifact ID, not an invented slug or hostname.
 
 ## Preconditions
 
@@ -27,7 +33,7 @@ Never place a token in a prompt, artifact, repository, or log. Do not use a publ
 2. Write the content to a controlled temporary file outside repositories.
 3. Call `artifactctl --base-url "$OAA_URL" create --title ... --kind ... --file ... --created-by hermes`.
 4. Read the JSON response and verify the artifact ID and current version ID.
-5. Return the verified artifact link using the service's configured URL and stable slug. Do not invent a hostname.
+5. Return a verified link using the configured workspace URL and returned artifact ID. Do not invent a hostname.
 
 The first release treats content as a safe source view. Do not claim that arbitrary HTML, JavaScript, Python, shell, or npm code was executed.
 
