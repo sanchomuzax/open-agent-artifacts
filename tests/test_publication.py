@@ -19,6 +19,13 @@ def test_publication_scan_allows_generic_tailscale_documentation(tmp_path):
     assert scan_files([docs]) == []
 
 
+def test_publication_scan_allows_loopback_development_addresses(tmp_path):
+    docs = tmp_path / "README.md"
+    docs.write_text("The local development server listens on 127.0.0.1.\n", encoding="utf-8")
+
+    assert scan_files([docs]) == []
+
+
 def test_publication_scan_rejects_runtime_database_and_private_paths(tmp_path):
     database = tmp_path / "runtime.db"
     private = tmp_path / "MEMORY.md"

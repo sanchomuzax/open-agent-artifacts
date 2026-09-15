@@ -18,7 +18,7 @@ SECRET_PATTERNS = (
 PERSONAL_PATTERNS = (
     re.compile(r"/home/[A-Za-z0-9_.-]+(?:/|$)"),
     re.compile(r"(?:notebooklm\.google\.com|docs\.google\.com|telegram\.me)", re.IGNORECASE),
-    re.compile(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b"),
+    re.compile(r"\b(?:10\.(?:[0-9]{1,3}\.){2}[0-9]{1,3}|172\.(?:1[6-9]|2[0-9]|3[0-1])\.(?:[0-9]{1,3}\.)[0-9]{1,3}|192\.168\.(?:[0-9]{1,3}\.)[0-9]{1,3})\b"),
     re.compile(r"\b[A-Za-z0-9-]+\.ts\.net\b", re.IGNORECASE),
 )
 
