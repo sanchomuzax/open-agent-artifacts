@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — 2026-09-15
+
+- Add validated SQLite backup and atomic restore helpers.
+- Add backup/restore command-line wrappers and operations documentation.
+
 ## 0.1.1 — 2026-09-15
 
 - Add the local HTTP API around immutable artifact storage.
