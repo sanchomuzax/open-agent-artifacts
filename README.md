@@ -4,6 +4,8 @@ A private-by-default artifact workspace for AI agents.
 
 The project provides a versioned catalog for agent-produced documents, code, diagrams, and other reviewable artifacts. Users can open a stable link, select a passage, leave feedback, compare versions, and ask an agent to prepare a new version.
 
+The workspace opens on a list/card catalog with previews. An opened artifact supports immutable version publishing, pin/unpin, visible or hidden comments, and highlighted comment anchors.
+
 ## Project description
 
 Read the [English / Hungarian project description with an EN/HU switch](web/project-description.html). The live workspace root is the primary destination for artifact requests; GitHub is the source-code extra.

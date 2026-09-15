@@ -229,6 +229,11 @@ def _handler_for(store: Store, api_token: str | None):
                         payload.get("addressed_in_version_id"),
                     )
                     self._send_json(HTTPStatus.CREATED, result)
+                elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] in {"pin", "unpin"}:
+                    self._send_json(
+                        HTTPStatus.OK,
+                        self.server.store.set_pinned(segments[2], segments[3] == "pin"),
+                    )
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "archive":
                     self._send_json(HTTPStatus.OK, self.server.store.archive_artifact(segments[2]))
                 else:

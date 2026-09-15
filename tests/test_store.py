@@ -77,6 +77,25 @@ def test_idempotency_returns_original_create_result(tmp_path):
     assert len(store.list_artifacts()) == 1
 
 
+def test_pinning_and_catalog_preview_are_persisted(tmp_path):
+    store = make_store(tmp_path)
+    first = store.create_artifact("First report", "markdown", "# First\nA useful preview.", "test")
+    second = store.create_artifact("Second report", "text", "Second content.", "test")
+
+    pinned = store.set_pinned(second["id"], True)
+    assert pinned["pinned"] is True
+    assert store.get_artifact(second["id"])["pinned"] is True
+
+    catalog = store.list_artifacts()
+    assert catalog[0]["id"] == second["id"]
+    assert catalog[0]["preview"] == "Second content."
+    assert catalog[0]["comment_count"] == 0
+    assert catalog[1]["id"] == first["id"]
+
+    unpinned = store.set_pinned(second["id"], False)
+    assert unpinned["pinned"] is False
+
+
 def test_comments_are_bound_to_version_and_events_are_audited(tmp_path):
     store = make_store(tmp_path)
     artifact = store.create_artifact("A report", "text", "content", "test")

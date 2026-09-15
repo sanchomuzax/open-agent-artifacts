@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9 — 2026-09-15
+
+- Add list/card catalog views with content previews.
+- Add persisted pin/unpin state and pinned-first catalog ordering.
+- Add in-place version publishing, comment visibility controls, and anchored highlights.
+
 ## 0.1.8 — 2026-09-15
 
 - Route every artifact request through the primary live workspace.

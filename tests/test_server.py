@@ -123,6 +123,28 @@ def test_configured_token_protects_api(running_server):
     assert health["status"] == "ok"
 
 
+def test_pin_endpoint_round_trip(running_server):
+    status, artifact = request(
+        running_server,
+        "POST",
+        "/api/artifacts",
+        {"title": "Pinned report", "kind": "text", "content": "content", "created_by": "test"},
+    )
+    assert status == 201
+
+    status, pinned = request(running_server, "POST", f"/api/artifacts/{artifact['id']}/pin", {})
+    assert status == 200
+    assert pinned["pinned"] is True
+
+    status, listed = request(running_server, "GET", "/api/artifacts")
+    assert status == 200
+    assert listed[0]["pinned"] is True
+
+    status, unpinned = request(running_server, "POST", f"/api/artifacts/{artifact['id']}/unpin", {})
+    assert status == 200
+    assert unpinned["pinned"] is False
+
+
 def test_static_catalog_shell_is_served_without_external_scripts(running_server):
     request_obj = urllib.request.Request(
         f"http://127.0.0.1:{running_server.server_port}/",
@@ -135,4 +157,8 @@ def test_static_catalog_shell_is_served_without_external_scripts(running_server)
     assert "Open Agent Artifacts" in html
     assert 'src="/app.js"' in html
     assert 'href="/project-description.html"' in html
+    assert 'id="cards-view"' in html
+    assert 'id="new-version-form"' in html
+    assert 'id="comments-toggle"' in html
+    assert "highlighted-quote" in html
     assert "https://" not in html

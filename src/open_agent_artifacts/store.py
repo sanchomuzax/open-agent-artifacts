@@ -82,6 +82,7 @@ class Store:
                     current_version_id TEXT,
                     created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
                     updated_at TEXT NOT NULL DEFAULT ({_now_sql()}),
+                    pinned_at TEXT,
                     archived_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS versions (
@@ -129,6 +130,9 @@ class Store:
                 INSERT OR IGNORE INTO schema_migrations(version) VALUES ('001_initial');
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(artifacts)").fetchall()}
+            if "pinned_at" not in columns:
+                connection.execute("ALTER TABLE artifacts ADD COLUMN pinned_at TEXT")
 
     def _slug(self, title: str, artifact_id: str) -> str:
         base = "-".join(title.lower().split())
@@ -151,6 +155,12 @@ class Store:
         if row is None:
             raise NotFoundError(f"version not found: {version_id}")
         return row
+
+    @staticmethod
+    def _artifact_dict(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        result["pinned"] = bool(result.pop("pinned_at", None))
+        return result
 
     @staticmethod
     def _hash_request(payload: dict[str, Any]) -> str:
@@ -214,27 +224,45 @@ class Store:
                        VALUES ('create', ?, ?, ?)""",
                     (idempotency_key, request_hash, artifact_id),
                 )
-            return dict(self._get_artifact_row(connection, artifact_id))
+            return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
 
     def get_artifact(self, artifact_id: str) -> dict[str, Any]:
         with self._connect() as connection:
-            return _as_dict(self._get_artifact_row(connection, artifact_id))  # type: ignore[return-value]
+            return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
 
     def list_artifacts(self, query: str | None = None, include_archived: bool = False) -> list[dict[str, Any]]:
         clauses = []
         params: list[Any] = []
         if not include_archived:
-            clauses.append("archived_at IS NULL")
+            clauses.append("a.archived_at IS NULL")
         if query:
-            clauses.append("(title LIKE ? OR slug LIKE ?)")
+            clauses.append("(a.title LIKE ? OR a.slug LIKE ?)")
             pattern = f"%{query}%"
             params.extend([pattern, pattern])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM artifacts {where} ORDER BY updated_at DESC, id DESC", params
+                f"""SELECT a.*, v.sequence AS current_version_sequence,
+                           substr(v.content, 1, 320) AS preview,
+                           (SELECT COUNT(*) FROM comments c WHERE c.artifact_id = a.id) AS comment_count
+                    FROM artifacts a
+                    LEFT JOIN versions v ON v.id = a.current_version_id
+                    {where}
+                    ORDER BY CASE WHEN a.pinned_at IS NULL THEN 1 ELSE 0 END,
+                             a.updated_at DESC, a.id DESC""", params
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [self._artifact_dict(row) for row in rows]
+
+    def set_pinned(self, artifact_id: str, pinned: bool) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._get_artifact_row(connection, artifact_id)
+            pinned_at = _now_sql() if pinned else "NULL"
+            connection.execute(
+                f"UPDATE artifacts SET pinned_at = {pinned_at}, updated_at = {_now_sql()} WHERE id = ?",
+                (artifact_id,),
+            )
+            return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
 
     def get_version(self, version_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -439,4 +467,4 @@ class Store:
                 f"UPDATE artifacts SET archived_at = {_now_sql()}, updated_at = {_now_sql()} WHERE id = ?",
                 (artifact_id,),
             )
-            return dict(self._get_artifact_row(connection, artifact_id))
+            return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
