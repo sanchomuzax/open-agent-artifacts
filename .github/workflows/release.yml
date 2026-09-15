@@ -30,6 +30,8 @@ jobs:
         run: python -m pytest -v
       - name: Run publication gate
         run: python scripts/check_publication.py --root .
+      - name: Check bilingual project description version
+        run: python scripts/check_description.py --root .
       - name: Check browser bundle syntax
         run: node --check web/app.js
       - name: Decide whether this is a product release

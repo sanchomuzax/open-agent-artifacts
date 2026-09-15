@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Open Agent Artifacts — Project</title>
+  <link rel="stylesheet" href="/project-description.css">
+</head>
+<body data-version="0.1.6">
+  <main class="page-shell">
+    <header class="hero">
+      <div data-language="en" class="hero-copy">
+        <p class="eyebrow">OPEN AGENT ARTIFACTS · PROJECT</p>
+        <h1>Reviewable workspaces for AI agents.</h1>
+        <p class="lead">A local-first, versioned surface for creating, reviewing, and improving agent-produced artifacts.</p>
+      </div>
+      <div data-language="hu" class="hero-copy" hidden>
+        <p class="eyebrow">OPEN AGENT ARTIFACTS · PROJEKT</p>
+        <h1>Ellenőrizhető munkatér agentek által készített anyagokhoz.</h1>
+        <p class="lead">Helyi, verziózott felület az agentek által létrehozott artefaktumok elkészítéséhez, átnézéséhez és javításához.</p>
+      </div>
+      <div class="language-switch" aria-label="Language switch">
+        <button type="button" data-set-language="en" aria-pressed="true">EN</button>
+        <button type="button" data-set-language="hu" aria-pressed="false">HU</button>
+      </div>
+    </header>
+
+    <section data-language="en" class="language-section">
+      <p class="eyebrow">PROJECT DESCRIPTION · v0.1.6</p>
+      <h2>A calm review layer between an agent and its deliverables.</h2>
+      <p>Open Agent Artifacts gives AI agents a durable place to publish documents, code, diagrams, and other reviewable work. A person can open a stable link, inspect an immutable version, select a passage, leave feedback, compare revisions, and request a deliberate next version.</p>
+      <div class="grid">
+        <article><h3>What it provides</h3><ul><li>Stable artifact links and a searchable catalog.</li><li>Immutable versions with exact-parent concurrency checks.</li><li>Quoted, version-bound feedback and review status.</li><li>Safe text-first previews and bounded line diffs.</li><li>A small CLI/API boundary for agent integrations.</li></ul></article>
+        <article><h3>How it works</h3><ul><li>The artifact service owns storage and review state.</li><li>Agents own content generation and explicit change requests.</li><li>SQLite keeps the first deployment local and inspectable.</li><li>Tailscale can provide private network access.</li><li>Hermes is an adapter, not a dependency of the core.</li></ul></article>
+      </div>
+      <h2>Safety boundary</h2>
+      <p>The first release displays artifact content as source text. It does not execute arbitrary JavaScript, HTML, Python, shell commands, or npm packages. Interactive previews require a separate isolation design and an explicit security decision.</p>
+      <h2>Designed for evidence</h2>
+      <p>Changes are tested before publication. Public releases contain only portable product material. Runtime data, private project context, credentials, and operational host details stay outside the public repository.</p>
+      <p class="links"><a href="https://github.com/sanchomuzax/open-agent-artifacts">Source repository</a> <span>·</span> <a href="/">Artifact workspace</a></p>
+    </section>
+
+    <section data-language="hu" class="language-section" hidden>
+      <p class="eyebrow">PROJEKTLEÍRÁS · v0.1.6</p>
+      <h2>Nyugodt ellenőrzési réteg az agent és az elkészült munka között.</h2>
+      <p>Az Open Agent Artifacts tartós helyet ad az agentek által létrehozott dokumentumoknak, kódoknak, diagramoknak és más ellenőrizhető munkáknak. Megnyithatsz egy stabil linket, megvizsgálhatsz egy változatot, kijelölhetsz egy részletet, visszajelzést adhatsz, összehasonlíthatod a verziókat, majd kérhetsz egy tudatosan elkészített új változatot.</p>
+      <div class="grid">
+        <article><h3>Amit nyújt</h3><ul><li>Stabil artefaktumlinkek és kereshető katalógus.</li><li>Immutábilis verziók és pontos szülőverzió-ellenőrzés.</li><li>Idézett, konkrét verzióhoz kötött visszajelzés.</li><li>Biztonságos szöveges előnézet és korlátozott soros diff.</li><li>Kis CLI/API-határ agent-integrációkhoz.</li></ul></article>
+        <article><h3>Hogyan működik</h3><ul><li>Az artefaktum-szolgáltatás kezeli a tárolást és a review-állapotot.</li><li>Az agent felel a tartalomért és a kért módosításért.</li><li>Az első telepítés helyi és áttekinthető SQLite-adatbázist használ.</li><li>A privát hálózati elérést Tailscale biztosíthatja.</li><li>A Hermes adapter, nem a mag működési függősége.</li></ul></article>
+      </div>
+      <h2>Biztonsági határ</h2>
+      <p>Az első kiadás az artefaktum tartalmát forrásszövegként jeleníti meg. Nem futtat tetszőleges JavaScriptet, HTML-t, Pythont, shell-parancsot vagy npm-csomagot. Interaktív előnézethez külön izolációs terv és explicit biztonsági döntés szükséges.</p>
+      <h2>Bizonyítékra tervezve</h2>
+      <p>A változásokat publikálás előtt teszteljük. A publikus kiadások csak hordozható termékanyagot tartalmaznak. A futási adat, a privát projektkontextus, a hitelesítő adatok és az üzemeltetési hostadatok a publikus repón kívül maradnak.</p>
+      <p class="links"><a href="https://github.com/sanchomuzax/open-agent-artifacts">Forráskód repó</a> <span>·</span> <a href="/">Artefaktum-munkatér</a></p>
+    </section>
+
+    <footer><span>Open Agent Artifacts</span><span>Release-controlled project description</span></footer>
+  </main>
+  <script src="/project-description.js" defer></script>
+</body>
+</html>

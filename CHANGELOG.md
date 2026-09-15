@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6 — 2026-09-15
+
+- Add the public bilingual project description with an EN/HU switch.
+- Enforce project-description version synchronization in validation and CI.
+
 ## 0.1.5 — 2026-09-15
 
 - Fix installed deployments to resolve the static web assets from the working directory.

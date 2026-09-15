@@ -25,5 +25,7 @@ jobs:
         run: python -m pytest -v
       - name: Check public repository contents
         run: python scripts/check_publication.py --root .
+      - name: Check bilingual project description version
+        run: python scripts/check_description.py --root .
       - name: Check browser bundle syntax
         run: node --check web/app.js
