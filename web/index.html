@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Open Agent Artifacts</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">PRIVATE REVIEW WORKSPACE</p>
+      <h1>Open Agent Artifacts</h1>
+    </div>
+    <div class="top-actions">
+      <button id="reload" class="button secondary" type="button">Reload</button>
+      <details class="settings">
+        <summary>Access</summary>
+        <form id="token-form" class="token-form">
+          <label for="api-token">API token</label>
+          <input id="api-token" type="password" autocomplete="off" placeholder="Optional local token">
+          <button class="button" type="submit">Save token</button>
+        </form>
+      </details>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="catalog-panel" aria-label="Artifact catalog">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">CATALOG</p>
+          <h2>Artifacts</h2>
+        </div>
+        <span id="artifact-count" class="count">0</span>
+      </div>
+      <label class="search-label" for="search">Search artifacts</label>
+      <input id="search" class="search" type="search" placeholder="Title or slug">
+      <div id="catalog-status" class="status muted">Loading catalog…</div>
+      <nav id="artifact-list" class="artifact-list" aria-label="Artifacts"></nav>
+    </aside>
+
+    <section id="detail" class="detail-panel" aria-live="polite">
+      <div class="empty-state">
+        <p class="eyebrow">READY</p>
+        <h2>Select an artifact</h2>
+        <p>Choose an item from the catalog to inspect its immutable versions and leave feedback.</p>
+      </div>
+    </section>
+  </main>
+
+  <template id="detail-template">
+    <div class="detail-header">
+      <div>
+        <p id="detail-kind" class="eyebrow"></p>
+        <h2 id="detail-title"></h2>
+        <p id="detail-meta" class="muted"></p>
+      </div>
+      <div class="version-control">
+        <label for="version-select">Version</label>
+        <select id="version-select"></select>
+      </div>
+    </div>
+    <div class="review-grid">
+      <article class="source-card">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">SAFE SOURCE VIEW</p>
+            <h3>Artifact content</h3>
+          </div>
+          <span id="version-badge" class="badge"></span>
+        </div>
+        <pre id="artifact-content" class="source-content" tabindex="0"></pre>
+        <p id="selection-hint" class="hint">Select text above to attach a comment to this version.</p>
+        <form id="comment-form" class="comment-form">
+          <label for="comment-body">Feedback</label>
+          <textarea id="comment-body" rows="3" maxlength="16384" placeholder="What should change?" required></textarea>
+          <div class="selected-quote"><span>Selection:</span> <code id="selected-text">None</code></div>
+          <button id="comment-submit" class="button" type="submit" disabled>Add feedback</button>
+          <p id="comment-status" class="status" role="status"></p>
+        </form>
+      </article>
+      <aside class="comments-card">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">REVIEW THREAD</p>
+            <h3>Feedback</h3>
+          </div>
+          <span id="comment-count" class="count">0</span>
+        </div>
+        <div id="comments" class="comments-list"></div>
+      </aside>
+    </div>
+  </template>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
