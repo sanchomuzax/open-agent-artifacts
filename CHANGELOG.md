@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7 — 2026-09-15
+
+- Add a first-class project overview link to the main artifact workspace.
+- Keep the live workspace and bilingual project description connected.
+
 ## 0.1.6 — 2026-09-15
 
 - Add the public bilingual project description with an EN/HU switch.

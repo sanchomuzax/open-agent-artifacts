@@ -28,7 +28,7 @@ h3 { margin-bottom: 0; font-size: 1rem; }
 .muted { color: var(--muted); }
 .hint { color: var(--muted); font-size: .82rem; }
 .top-actions { display: flex; align-items: center; gap: .6rem; }
-.button { border: 1px solid var(--accent); border-radius: .55rem; padding: .58rem .85rem; color: #08221d; background: var(--accent); font-weight: 700; }
+.button { border: 1px solid var(--accent); border-radius: .55rem; padding: .58rem .85rem; color: #08221d; background: var(--accent); font-weight: 700; text-decoration: none; }
 .button:hover { background: var(--accent-2); }
 .button:disabled { cursor: not-allowed; opacity: .45; }
 .button.secondary { border-color: var(--line); color: var(--text); background: var(--panel); }
