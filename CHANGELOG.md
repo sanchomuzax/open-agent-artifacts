@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4 — 2026-09-15
+
+- Add an in-browser line diff for comparing an older version with the current version.
+- Keep diff rendering bounded for large documents.
+
 ## 0.1.3 — 2026-09-15
 
 - Add a hardened loopback-bound systemd deployment template.

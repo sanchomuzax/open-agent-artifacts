@@ -65,6 +65,9 @@ h3 { margin-bottom: 0; font-size: 1rem; }
 .card-heading { padding: 1rem 1.1rem; border-bottom: 1px solid var(--line); }
 .source-content { min-height: 18rem; max-height: 55vh; overflow: auto; margin: 0; padding: 1rem 1.1rem; color: #d8e7ed; background: #0a0f14; font: .84rem/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
 .source-content:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.diff-panel { border-top: 1px solid var(--line); padding: .8rem 1.1rem 1rem; background: #0e161d; }
+.diff-panel .eyebrow { margin-bottom: .5rem; }
+.diff-content { max-height: 22rem; overflow: auto; margin: 0; color: #d8e7ed; font: .78rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .hint { margin: 0; padding: .7rem 1.1rem; border-bottom: 1px solid var(--line); }
 .comment-form { padding: 1rem 1.1rem; }
 .comment-form textarea { resize: vertical; margin-bottom: .65rem; }

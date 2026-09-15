@@ -97,6 +97,13 @@
       select.append(option);
     });
     select.addEventListener("change", () => loadVersion(select.value));
+    $("compare-toggle").addEventListener("click", () => {
+      const panel = $("diff-panel");
+      if (panel && state.version.id !== state.artifact.current_version_id) {
+        panel.hidden = !panel.hidden;
+        renderCompareState();
+      }
+    });
     $("artifact-content").addEventListener("mouseup", captureSelection);
     $("artifact-content").addEventListener("keyup", captureSelection);
     $("comment-form").addEventListener("submit", submitComment);
@@ -112,7 +119,55 @@
     $("selected-text").textContent = "None";
     $("comment-submit").disabled = true;
     $("selection-hint").textContent = "Select text above to attach a comment to this version.";
+    renderCompareState();
     await loadComments();
+  }
+
+  function buildLineDiff(oldContent, newContent) {
+    const oldLines = oldContent.split("\n");
+    const newLines = newContent.split("\n");
+    if (oldLines.length > 1000 || newLines.length > 1000) {
+      return "Diff omitted: this version is too large for an in-browser comparison.";
+    }
+    const table = Array.from({ length: oldLines.length + 1 }, () => Array(newLines.length + 1).fill(0));
+    for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
+      for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
+        table[oldIndex][newIndex] = oldLines[oldIndex] === newLines[newIndex]
+          ? table[oldIndex + 1][newIndex + 1] + 1
+          : Math.max(table[oldIndex + 1][newIndex], table[oldIndex][newIndex + 1]);
+      }
+    }
+    const result = [];
+    let oldIndex = 0;
+    let newIndex = 0;
+    while (oldIndex < oldLines.length || newIndex < newLines.length) {
+      if (oldIndex < oldLines.length && newIndex < newLines.length && oldLines[oldIndex] === newLines[newIndex]) {
+        result.push(` ${oldLines[oldIndex]}`);
+        oldIndex += 1;
+        newIndex += 1;
+      } else if (newIndex < newLines.length && (oldIndex === oldLines.length || table[oldIndex][newIndex + 1] >= table[oldIndex + 1][newIndex])) {
+        result.push(`+${newLines[newIndex]}`);
+        newIndex += 1;
+      } else {
+        result.push(`-${oldLines[oldIndex]}`);
+        oldIndex += 1;
+      }
+    }
+    return result.join("\n");
+  }
+
+  function renderCompareState() {
+    const toggle = $("compare-toggle");
+    const panel = $("diff-panel");
+    if (!toggle || !panel || !state.version) return;
+    const isCurrent = state.version.id === state.artifact.current_version_id;
+    toggle.disabled = isCurrent;
+    toggle.textContent = isCurrent ? "Current version" : (panel.hidden ? "Compare current" : "Hide diff");
+    if (isCurrent) panel.hidden = true;
+    if (!isCurrent) {
+      const current = state.versions.find((version) => version.id === state.artifact.current_version_id);
+      $("diff-content").textContent = current ? buildLineDiff(state.version.content, current.content) : "Current version unavailable.";
+    }
   }
 
   function captureSelection() {

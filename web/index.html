@@ -70,8 +70,13 @@
             <h3>Artifact content</h3>
           </div>
           <span id="version-badge" class="badge"></span>
+          <button id="compare-toggle" class="button secondary" type="button" disabled>Compare current</button>
         </div>
         <pre id="artifact-content" class="source-content" tabindex="0"></pre>
+        <div id="diff-panel" class="diff-panel" hidden>
+          <p class="eyebrow">LINE DIFF</p>
+          <pre id="diff-content" class="diff-content"></pre>
+        </div>
         <p id="selection-hint" class="hint">Select text above to attach a comment to this version.</p>
         <form id="comment-form" class="comment-form">
           <label for="comment-body">Feedback</label>
