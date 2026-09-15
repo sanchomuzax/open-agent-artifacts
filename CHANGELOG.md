@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 — 2026-09-15
+
+- Add a hardened loopback-bound systemd deployment template.
+- Add the initial Hermes adapter contract and deployment runbook.
+
 ## 0.1.2 — 2026-09-15
 
 - Add validated SQLite backup and atomic restore helpers.

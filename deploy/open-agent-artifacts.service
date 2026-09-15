@@ -1,0 +1,28 @@
+[Unit]
+Description=Open Agent Artifacts service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agent-artifacts
+Group=agent-artifacts
+WorkingDirectory=/opt/open-agent-artifacts
+EnvironmentFile=-/etc/open-agent-artifacts/env
+ExecStart=/opt/open-agent-artifacts/.venv/bin/oaa-server --db /var/lib/open-agent-artifacts/artifacts.db --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/open-agent-artifacts
+
+[Install]
+WantedBy=multi-user.target
