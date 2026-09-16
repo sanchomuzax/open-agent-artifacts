@@ -10,16 +10,13 @@ An agent uses the service in this loop:
 4. It prepares a new version, preserving the old version.
 5. It reads the new version back and only then marks the comment addressed.
 
-Installing the service or `artifactctl` does not automatically teach an agent this workflow. Install the matching adapter skill into the agent's skill directory. For Hermes, from a checked-out release repository:
+Installing the service or `artifactctl` does not automatically teach an agent this workflow. Install the matching adapter skill into the agent's skill directory. For Hermes, use the release-installed command:
 
 ```bash
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-install -d "$HERMES_HOME/skills/open-agent-artifacts"
-install -m 0644 integrations/hermes/SKILL.md \
-  "$HERMES_HOME/skills/open-agent-artifacts/SKILL.md"
+artifactctl install-agent-skill --agent hermes
 ```
 
-For another agent, give it this document and the command/API examples below, or install an equivalent skill in that agent's documented skill directory. Keep `OAA_URL` and any `OAA_API_TOKEN` outside the repository. The token must never appear in a prompt, artifact, or log.
+The command resolves the active `HERMES_HOME` profile, creates missing directories, reports the target path, skill version, and SHA-256, and is idempotent. A different existing file is preserved and causes a failure unless `--force` is explicit. Other agents are not guessed or written to; give them this document and install an equivalent skill in that agent's documented skill directory. Keep `OAA_URL` and any `OAA_API_TOKEN` outside the repository. The token must never appear in a prompt, artifact, or log.
 
 ## Preconditions
 
@@ -36,6 +33,26 @@ artifactctl --base-url "$OAA_URL" create \
   --kind markdown \
   --file report.md \
   --created-by agent
+```
+
+Structured metadata is optional and uses schema version 1. Unknown fields are rejected; values are bounded and returned on artifact, list, search, and show responses:
+
+```bash
+artifactctl --base-url "$OAA_URL" create \
+  --title "Reviewable report" --kind markdown --file report.md \
+  --metadata-json '{"tags":["review"],"project":"demo","source_agent":"hermes","purpose":"release review","content_language":"en"}'
+artifactctl --base-url "$OAA_URL" list --project demo --source-agent hermes --tag review
+artifactctl --base-url "$OAA_URL" search "release" --project demo --tag review
+```
+
+Metadata can accompany a new immutable version or be changed independently. Independent changes do not alter historical content and are recorded in the metadata audit history:
+
+```bash
+artifactctl --base-url "$OAA_URL" publish ARTIFACT_ID \
+  --file revised.md --expected-current-version-id VERSION_ID \
+  --metadata-json '{"tags":["review","v2"],"project":"demo","source_agent":"hermes"}'
+artifactctl --base-url "$OAA_URL" metadata ARTIFACT_ID \
+  --metadata-json '{"tags":["review","approved"],"project":"demo","source_agent":"hermes"}'
 ```
 
 Supported kinds are `text`, `markdown`, `code`, `html`, `svg`, and `mermaid`. Read the JSON response. It contains the artifact ID, slug, and current version ID. Use the returned artifact ID when presenting a link; never invent an ID, slug, or hostname.
@@ -180,6 +197,65 @@ artifactctl --base-url "$OAA_URL" anchor check COMMENT_ID --version VERSION_ID
 
 The read-only result is `exact`, `ambiguous`, `missing`, or `invalid`. It includes the match count and Unicode code-point offsets. An ambiguous or missing anchor is never moved automatically.
 
+## Hermes Plugin Catalog compatibility
+
+The release root is a Portable Agent Plugins v1 package. It has the fixed
+`plugin.json` manifest and a `skills/open-agent-artifacts/SKILL.md` component;
+there is no MCP server because the service already has a bounded CLI/API
+adapter. The package declares no credentials and does not execute arbitrary
+code during installation.
+
+The package can be installed from this repository through Hermes' normal plugin
+workflow. Catalog admission is a separate maintainer-reviewed action requiring
+an exact 40-hex commit pin; this repository does not pretend that a local
+manifest is already admitted to the upstream catalog.
+
+## Poll events and configure a webhook
+
+Mutation events are durable and ordered. Poll them with an opaque cursor and persist the returned cursor only after processing the page:
+
+```bash
+artifactctl --base-url "$OAA_URL" events list --limit 50
+artifactctl --base-url "$OAA_URL" events list --since CURSOR --limit 50
+artifactctl --base-url "$OAA_URL" inbox --since CURSOR --limit 50
+artifactctl --base-url "$OAA_URL" events deliveries EVENT_ID
+```
+
+The feed contains `version.created`, `comment.created`, and `comment.updated` events. Each event carries its event, artifact, version, comment, and operation IDs where applicable. Polling is read-only; an event never authorizes or performs an artifact mutation.
+
+Webhook delivery is disabled unless both settings are explicitly configured in the service environment:
+
+```text
+OAA_WEBHOOK_URL=https://private-agent.example/events
+OAA_WEBHOOK_SECRET=<secret kept outside the repository>
+```
+
+Requests carry `X-OAA-Event-ID`, `X-OAA-Delivery-Attempt`, and `X-OAA-Signature: sha256=...`, where the signature is HMAC-SHA256 over the exact request body. Delivery uses a two-second timeout and at most three attempts. Read delivery state with `GET /api/events/{event_id}/deliveries`; webhook failure does not roll back the artifact mutation.
+
+## Idempotent writes and audit metadata
+
+Use a fresh, stable UUID for one logical write and reuse it only when retrying that same request:
+
+```bash
+artifactctl --base-url "$OAA_URL" create \
+  --title "Retry-safe report" --kind markdown --file report.md \
+  --created-by agent --idempotency-key REQUEST_UUID
+```
+
+An identical retry returns the original result. Reusing the key with a different payload is rejected. Keys are persisted in the service database; never put secrets or prompt content in them.
+
+For attribution, send the agent identity and run metadata on every write:
+
+```bash
+artifactctl --base-url "$OAA_URL" publish ARTIFACT_ID \
+  --file revised.md --expected-current-version-id VERSION_ID \
+  --source-comment-id COMMENT_ID \
+  --agent-id my-agent --agent-run-id RUN_UUID --operation-id OP_UUID
+artifactctl --base-url "$OAA_URL" audit list --agent-id my-agent
+```
+
+`OAA_AGENT_ID` can bind the configured bearer token to one service agent. A request that claims another agent ID is rejected. Audit records contain operation type, actor, agent/run/operation IDs, resource ID, timestamp, and a request hash; they do not contain tokens, prompts, or artifact content.
+
 ## API endpoints
 
 - `GET /healthz`, `GET /readyz`
@@ -190,8 +266,10 @@ The read-only result is `exact`, `ambiguous`, `missing`, or `invalid`. It includ
 - `POST /api/artifacts/{id}/archive`, `POST /api/artifacts/{id}/visit`
 - `GET /api/versions/{id}`, `GET /api/versions/{id}/comments`, `POST /api/versions/{id}/comments`
 - `GET /api/comments/{id}`, `GET /api/comments/{id}/events`, `POST /api/comments/{id}/events`
+- `GET /api/events`, `GET /api/events/{id}/deliveries`, `GET /api/operations`
+- `GET /api/artifacts/{id}/metadata/events`, `POST /api/artifacts/{id}/metadata`
 
-When `OAA_API_TOKEN` is configured, send `Authorization: Bearer $OAA_API_TOKEN`. Health endpoints remain available for process supervision and do not expose artifact content.
+When `OAA_API_TOKEN` is configured, send `Authorization: Bearer <token>`. Health endpoints remain available for process supervision and do not expose artifact content.
 
 ## Hermes boundary
 
