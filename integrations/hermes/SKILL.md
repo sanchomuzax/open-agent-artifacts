@@ -35,7 +35,7 @@ Never place a token in a prompt, artifact, repository, or log. Do not use a publ
 4. Read the JSON response and verify the artifact ID and current version ID.
 5. Return a verified link using the configured workspace URL and returned artifact ID. Do not invent a hostname.
 
-The first release treats content as a safe source view. Do not claim that arbitrary HTML, JavaScript, Python, shell, or npm code was executed.
+The first release renders Markdown, presents allowlist-copied HTML in an opaque-origin sandbox, and uses escaped source for unsupported kinds. Do not claim that artifact-provided JavaScript, Python, shell, or npm code was executed.
 
 ## Process feedback
 

@@ -9,6 +9,9 @@
       snapshot: null,
       nextCursor: null,
       loading: false,
+      generation: 0,
+      controller: null,
+      appendLoading: false,
     },
     items: [],
     me: null,
@@ -205,23 +208,58 @@
   }
 
   function sanitizeHtmlForSandbox(source, versionId) {
-    const parser = new DOMParser();
-    const documentCopy = parser.parseFromString(String(source || ""), "text/html");
-    documentCopy.querySelectorAll("script, iframe, object, embed, form, base, meta[http-equiv='refresh']").forEach((element) => element.remove());
-    documentCopy.querySelectorAll("*").forEach((element) => {
-      [...element.attributes].forEach((attribute) => {
-        if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
-        if (["src", "href", "action", "formaction"].includes(attribute.name.toLowerCase())) {
-          const value = attribute.value.trim();
-          if (value && !value.startsWith("#") && !value.startsWith("data:image/")) element.removeAttribute(attribute.name);
+    const parsed = new DOMParser().parseFromString(String(source || ""), "text/html");
+    const trusted = document.implementation.createHTMLDocument("");
+    const allowedTags = new Set([
+      "a", "abbr", "article", "aside", "b", "blockquote", "br", "caption", "code", "col", "colgroup",
+      "dd", "del", "details", "div", "dl", "dt", "em", "figcaption", "figure", "footer", "h1", "h2",
+      "h3", "h4", "h5", "h6", "header", "hr", "i", "img", "kbd", "li", "main", "mark", "nav", "ol",
+      "p", "pre", "q", "s", "samp", "section", "small", "span", "strong", "sub", "summary", "sup", "table",
+      "tbody", "td", "tfoot", "th", "thead", "time", "tr", "u", "ul", "var",
+    ]);
+    const safeAttributes = new Set(["class", "id", "title", "role", "style", "colspan", "rowspan", "scope", "alt", "width", "height"]);
+    const copy = (input, outputParent) => {
+      if (input.nodeType === Node.TEXT_NODE) {
+        outputParent.append(trusted.createTextNode(input.nodeValue || ""));
+        return;
+      }
+      if (input.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = input.localName.toLowerCase();
+      if (!allowedTags.has(tag)) return;
+      const output = trusted.createElement(tag);
+      [...input.attributes].forEach((attribute) => {
+        const name = attribute.name.toLowerCase();
+        if (/^on/.test(name)) return;
+        if (name === "src" && tag === "img" && /^data:image\/(?:png|gif|jpeg|webp);base64,/i.test(attribute.value)) {
+          output.setAttribute("src", attribute.value);
+        } else if (name === "href" && attribute.value.trim().startsWith("#")) {
+          output.setAttribute("href", attribute.value.trim());
+        } else if (safeAttributes.has(name) || name.startsWith("aria-") || name.startsWith("data-")) {
+          output.setAttribute(attribute.name, attribute.value);
         }
       });
-    });
-    const body = documentCopy.body ? documentCopy.body.innerHTML : "";
+      outputParent.append(output);
+      [...input.childNodes].forEach((child) => copy(child, output));
+    };
+    [...parsed.body.childNodes].forEach((child) => copy(child, trusted.body));
     const nonce = "oaa-bridge-v1";
     const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'none'";
-    const bridge = `<script src="/sandbox-bridge.js" nonce="${nonce}" data-nonce="${nonce}" data-version-id="${String(versionId)}"></script>`;
-    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{overflow:hidden}body{font:16px/1.6 system-ui,sans-serif;margin:1.4rem;color:#edf5f6;background:#101820}img{max-width:100%;height:auto}a{color:#8bdaca}</style></head><body>${body}${bridge}</body></html>`;
+    const cspMeta = trusted.createElement("meta");
+    cspMeta.httpEquiv = "Content-Security-Policy";
+    cspMeta.content = csp;
+    const viewport = trusted.createElement("meta");
+    viewport.name = "viewport";
+    viewport.content = "width=device-width, initial-scale=1";
+    const style = trusted.createElement("style");
+    style.textContent = "html,body{overflow:hidden}body{font:16px/1.6 system-ui,sans-serif;margin:1.4rem;color:#edf5f6;background:#101820}img{max-width:100%;height:auto}a{color:#8bdaca}";
+    trusted.head.append(cspMeta, viewport, style);
+    const bridge = trusted.createElement("script");
+    bridge.src = "/sandbox-bridge.js";
+    bridge.nonce = nonce;
+    bridge.dataset.nonce = nonce;
+    bridge.dataset.versionId = String(versionId);
+    trusted.body.append(bridge);
+    return `<!doctype html>${trusted.documentElement.outerHTML}`;
   }
 
   function highlightExact(parent, exact, commentId) {
@@ -421,23 +459,38 @@
   }
 
   async function loadCatalog(append = false) {
-    if (state.catalog.loading) return;
-    state.catalog.loading = true;
+    if (append && (state.catalog.appendLoading || !state.catalog.nextCursor)) return;
+    if (!append && state.catalog.controller) state.catalog.controller.abort();
+    const generation = append ? state.catalog.generation : ++state.catalog.generation;
+    const controller = new AbortController();
+    if (append) state.catalog.appendLoading = true;
+    else {
+      state.catalog.controller = controller;
+      state.catalog.loading = true;
+    }
+    const identity = `${state.catalog.scope}\n${state.catalog.view}\n${state.catalog.query}`;
+    const cursor = append ? state.catalog.nextCursor : null;
     setStatus(append ? "Loading more…" : "Loading artifacts…");
     const params = new URLSearchParams({ scope: state.catalog.scope, view: state.catalog.view, limit: "40" });
     if (state.catalog.query) params.set("q", state.catalog.query);
-    if (append && state.catalog.nextCursor) params.set("cursor", state.catalog.nextCursor);
+    if (cursor) params.set("cursor", cursor);
     try {
-      const result = await api(`/api/artifacts?${params.toString()}`);
+      const result = await api(`/api/artifacts?${params.toString()}`, { signal: controller.signal });
+      const currentIdentity = `${state.catalog.scope}\n${state.catalog.view}\n${state.catalog.query}`;
+      if (generation !== state.catalog.generation || identity !== currentIdentity || (append && cursor !== state.catalog.nextCursor)) return;
       state.items = append ? state.items.concat(result.items || []) : (result.items || []);
       state.catalog.snapshot = result.snapshot;
       state.catalog.nextCursor = result.next_cursor;
       setStatus(state.items.length ? "" : "No artifacts in this view.");
       renderCatalog();
     } catch (error) {
-      setStatus(error.message, "error");
+      if (error.name !== "AbortError" && generation === state.catalog.generation) setStatus(error.message, "error");
     } finally {
-      state.catalog.loading = false;
+      if (append) state.catalog.appendLoading = false;
+      else if (generation === state.catalog.generation) {
+        state.catalog.loading = false;
+        state.catalog.controller = null;
+      }
     }
   }
 
@@ -790,17 +843,25 @@
   function selectionFromRange(range, exact) {
     const container = $("presentation");
     const text = container?.textContent || "";
-    const start = text.indexOf(exact);
+    if (!range || !container) return null;
+    const before = document.createRange();
+    before.selectNodeContents(container);
+    before.setEnd(range.startContainer, range.startOffset);
+    const selected = range.toString();
+    const leading = Math.max(0, selected.indexOf(exact));
+    const start = Array.from(before.toString()).length + Array.from(selected.slice(0, leading)).length;
+    const exactLength = Array.from(exact).length;
+    const points = Array.from(text);
     return {
       schema: 2,
       type: "text-range",
       coordinate_space: "unicode-code-points",
       start: Math.max(0, start),
-      end: Math.max(0, start) + exact.length,
+      end: start + exactLength,
       quote: {
         exact,
-        prefix: start >= 0 ? text.slice(Math.max(0, start - 80), start) : "",
-        suffix: start >= 0 ? text.slice(start + exact.length, start + exact.length + 80) : "",
+        prefix: points.slice(Math.max(0, start - 80), start).join(""),
+        suffix: points.slice(start + exactLength, start + exactLength + 80).join(""),
       },
     };
   }
@@ -808,6 +869,7 @@
   function captureSelection(range, exact, rect) {
     if (!state.version || !exact.trim()) return;
     state.selection = selectionFromRange(range, exact);
+    if (!state.selection) return;
     showComposer(rect, state.selection);
   }
 
@@ -866,25 +928,28 @@
   function handleSandboxMessage(event) {
     const data = event.data;
     const frame = $("presentation")?.querySelector("iframe.html-frame");
-    if (!frame || event.source !== frame.contentWindow || !data || data.schema !== 1 || data.nonce !== "oaa-bridge-v1") return;
+    if (!frame || event.source !== frame.contentWindow || !data || data.schema !== 2 || data.nonce !== "oaa-bridge-v1") return;
     if (!state.version || data.version_id !== state.version.id) return;
     if (data.type === "oaa-resize") {
       const height = Number(data.height);
       if (Number.isFinite(height) && height > 0) frame.setAttribute("height", String(Math.max(320, Math.min(20000, Math.ceil(height + 8)))));
       return;
     }
-    if (data.type !== "oaa-selection" || typeof data.exact !== "string" || !data.exact.trim()) return;
+    if (data.type !== "oaa-selection" || !data.anchor || typeof data.anchor.quote?.exact !== "string") return;
     const rect = frame.getBoundingClientRect();
-    captureSelection(null, data.exact, { left: rect.left + 16, bottom: rect.top + 70 });
+    state.selection = data.anchor;
+    showComposer({ left: rect.left + 16, bottom: rect.top + 70 }, state.selection);
   }
 
   function bindEvents() {
     $("new-artifact").addEventListener("click", openCreateDialog);
+    let searchTimer = null;
     $("catalog-search").addEventListener("input", (event) => {
       state.catalog.query = event.target.value.trim();
       state.catalog.nextCursor = null;
       persistCatalogState();
-      loadCatalog();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => loadCatalog(), 180);
     });
     document.querySelectorAll(".scope-tab").forEach((tab) => tab.addEventListener("click", () => {
       if (tab.classList.contains("identity-disabled")) return;
