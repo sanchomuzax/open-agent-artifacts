@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
+from .agent_skill import AgentSkillInstallError, install_agent_skill
 
 class CLIError(Exception):
     """A user-facing CLI error."""
@@ -31,12 +32,35 @@ def _read_content(content: str | None, file_path: str | None) -> str | None:
     return content
 
 
+def _read_metadata(metadata_json: str | None, file_path: str | None) -> dict[str, Any] | None:
+    if metadata_json is not None and file_path is not None:
+        raise CLIError("choose either --metadata-json or --metadata-file")
+    if metadata_json is None and file_path is None:
+        return None
+    try:
+        if metadata_json is not None:
+            raw = metadata_json
+        else:
+            assert file_path is not None
+            raw = Path(file_path).read_text(encoding="utf-8")
+        value = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise CLIError(f"invalid metadata JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise CLIError("metadata JSON must be an object")
+    return value
+
+
 def _request(
     base_url: str,
     method: str,
     path: str,
     payload: dict[str, Any] | None = None,
     token: str | None = None,
+    idempotency_key: str | None = None,
+    agent_id: str | None = None,
+    agent_run_id: str | None = None,
+    operation_id: str | None = None,
 ) -> tuple[int, Any]:
     body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {"Accept": "application/json"}
@@ -44,6 +68,14 @@ def _request(
         headers["Content-Type"] = "application/json"
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    if agent_id:
+        headers["X-OAA-Agent-ID"] = agent_id
+    if agent_run_id:
+        headers["X-OAA-Agent-Run-ID"] = agent_run_id
+    if operation_id:
+        headers["X-OAA-Operation-ID"] = operation_id
     request = Request(base_url.rstrip("/") + path, data=body, headers=headers, method=method)
     try:
         with urlopen(request, timeout=10) as response:
@@ -62,6 +94,18 @@ def _add_content_options(parser: argparse.ArgumentParser, required: bool = False
     group = parser.add_mutually_exclusive_group(required=required)
     group.add_argument("--content")
     group.add_argument("--file")
+
+
+def _add_metadata_options(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--metadata-json")
+    group.add_argument("--metadata-file")
+
+
+def _add_operation_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--agent-id")
+    parser.add_argument("--agent-run-id")
+    parser.add_argument("--operation-id")
 
 
 def _check_anchor(anchor: Any, content: str, comment_id: str, source_version_id: str, target_version_id: str) -> dict[str, Any]:
@@ -139,11 +183,20 @@ def _build_parser() -> argparse.ArgumentParser:
     create.add_argument("--title", required=True)
     create.add_argument("--kind", required=True)
     _add_content_options(create, required=True)
+    _add_metadata_options(create)
     create.add_argument("--created-by", default="artifactctl")
+    create.add_argument("--idempotency-key")
+    create.add_argument("--agent-id")
+    create.add_argument("--agent-run-id")
+    create.add_argument("--operation-id")
 
     listing = subparsers.add_parser("list", help="list artifacts")
     listing.add_argument("--query")
     listing.add_argument("--include-archived", action="store_true")
+    listing.add_argument("--kind")
+    listing.add_argument("--tag", dest="tags", action="append", default=[])
+    listing.add_argument("--project")
+    listing.add_argument("--source-agent")
 
     get = subparsers.add_parser("get", help="get an artifact")
     get.add_argument("artifact_id")
@@ -152,10 +205,16 @@ def _build_parser() -> argparse.ArgumentParser:
     publish.add_argument("artifact_id")
     publish.add_argument("--expected-current-version-id", required=True)
     _add_content_options(publish)
+    _add_metadata_options(publish)
     publish.add_argument("--old-str")
     publish.add_argument("--new-str")
     publish.add_argument("--change-summary", default="")
     publish.add_argument("--created-by", default="artifactctl")
+    publish.add_argument("--idempotency-key")
+    publish.add_argument("--agent-id")
+    publish.add_argument("--agent-run-id")
+    publish.add_argument("--operation-id")
+    publish.add_argument("--source-comment-id")
 
     feedback = subparsers.add_parser("feedback", help="add feedback to a version")
     feedback.add_argument("version_id")
@@ -165,12 +224,20 @@ def _build_parser() -> argparse.ArgumentParser:
     feedback.add_argument("--exact")
     feedback.add_argument("--prefix", default="")
     feedback.add_argument("--suffix", default="")
+    feedback.add_argument("--idempotency-key")
+    feedback.add_argument("--agent-id")
+    feedback.add_argument("--agent-run-id")
+    feedback.add_argument("--operation-id")
 
     address = subparsers.add_parser("address", help="change feedback status")
     address.add_argument("comment_id")
     address.add_argument("--status", required=True, choices=["open", "addressed", "resolved"])
     address.add_argument("--actor", default="artifactctl")
     address.add_argument("--version-id")
+    address.add_argument("--idempotency-key")
+    address.add_argument("--agent-id")
+    address.add_argument("--agent-run-id")
+    address.add_argument("--operation-id")
     comments = subparsers.add_parser("comments", help="inspect feedback")
     comments_subparsers = comments.add_subparsers(dest="comments_command", required=True)
     comments_list = comments_subparsers.add_parser("list", help="list comments")
@@ -186,6 +253,14 @@ def _build_parser() -> argparse.ArgumentParser:
     inbox.add_argument("--status", choices=["open", "addressed", "resolved", "all"], default="open")
     inbox.add_argument("--limit", type=int, default=50)
     inbox.add_argument("--cursor")
+    inbox.add_argument("--since")
+    events = subparsers.add_parser("events", help="poll durable mutation events")
+    events_subparsers = events.add_subparsers(dest="events_command", required=True)
+    events_list = events_subparsers.add_parser("list", help="list events after a cursor")
+    events_list.add_argument("--since")
+    events_list.add_argument("--limit", type=int, default=50)
+    events_deliveries = events_subparsers.add_parser("deliveries", help="list webhook delivery attempts")
+    events_deliveries.add_argument("event_id")
     show = subparsers.add_parser("show", help="show complete artifact context")
     show.add_argument("artifact_id")
     show.add_argument("--summary", action="store_true")
@@ -194,6 +269,9 @@ def _build_parser() -> argparse.ArgumentParser:
     search.add_argument("--kind")
     search.add_argument("--include-archived", action="store_true")
     search.add_argument("--comment-status", choices=["open", "addressed", "resolved"])
+    search.add_argument("--tag", dest="tags", action="append", default=[])
+    search.add_argument("--project")
+    search.add_argument("--source-agent")
     search.add_argument("--limit", type=int, default=50)
     search.add_argument("--cursor")
     diff = subparsers.add_parser("diff", help="compare two immutable versions")
@@ -213,27 +291,69 @@ def _build_parser() -> argparse.ArgumentParser:
     versions_list.add_argument("artifact_id")
     archive = subparsers.add_parser("archive", help="archive an artifact")
     archive.add_argument("artifact_id")
+    _add_operation_options(archive)
     rename = subparsers.add_parser("rename", help="rename an artifact")
     rename.add_argument("artifact_id")
     rename.add_argument("--title", required=True)
+    _add_operation_options(rename)
     duplicate = subparsers.add_parser("duplicate", help="duplicate an artifact")
     duplicate.add_argument("artifact_id")
     duplicate.add_argument("--created-by", default="artifactctl")
+    _add_operation_options(duplicate)
     restore = subparsers.add_parser("restore", help="restore a version as a new version")
     restore.add_argument("artifact_id")
     restore.add_argument("--version-id", required=True)
     restore.add_argument("--expected-current-version-id", required=True)
     restore.add_argument("--created-by", default="artifactctl")
+    _add_operation_options(restore)
     pin = subparsers.add_parser("pin", help="pin an artifact")
     pin.add_argument("artifact_id")
+    _add_operation_options(pin)
     unpin = subparsers.add_parser("unpin", help="unpin an artifact")
     unpin.add_argument("artifact_id")
+    _add_operation_options(unpin)
     visit = subparsers.add_parser("visit", help="record an artifact visit")
     visit.add_argument("artifact_id")
+    _add_operation_options(visit)
+    audit = subparsers.add_parser("audit", help="inspect operation audit records")
+    audit_subparsers = audit.add_subparsers(dest="audit_command", required=True)
+    audit_list = audit_subparsers.add_parser("list", help="list operations")
+    audit_list.add_argument("--resource-id")
+    audit_list.add_argument("--agent-id")
+    audit_list.add_argument("--limit", type=int, default=100)
+    metadata = subparsers.add_parser("metadata", help="replace structured artifact metadata")
+    metadata.add_argument("artifact_id")
+    _add_metadata_options(metadata)
+    metadata.add_argument("--actor", default="artifactctl")
+    _add_operation_options(metadata)
+    install = subparsers.add_parser("install-agent-skill", help="install the bundled agent skill")
+    install.add_argument("--agent", required=True)
+    install.add_argument("--hermes-home")
+    install.add_argument("--force", action="store_true")
     return parser
 
 
 def _run(args: argparse.Namespace) -> Any:
+    if args.command == "install-agent-skill":
+        try:
+            return install_agent_skill(args.agent, home=args.hermes_home, force=args.force)
+        except AgentSkillInstallError as error:
+            raise CLIError(str(error)) from error
+    if args.command == "metadata":
+        metadata = _read_metadata(args.metadata_json, args.metadata_file)
+        if metadata is None:
+            raise CLIError("metadata needs --metadata-json or --metadata-file")
+        return _request(
+            args.base_url,
+            "POST",
+            f"/api/artifacts/{quote(args.artifact_id, safe='')}/metadata",
+            {"metadata": metadata, "actor": args.actor},
+            args.token,
+            None,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
+        )[1]
     if args.command == "comments":
         if args.comments_command == "list":
             status = None if args.status == "all" else args.status
@@ -255,10 +375,22 @@ def _run(args: argparse.Namespace) -> Any:
             items = _request(args.base_url, "GET", f"/api/comments/{quote(args.comment_id, safe='')}/events", token=args.token)[1]
             return {"items": items}
     if args.command == "inbox":
+        if args.since:
+            params = {"cursor": args.since, "limit": args.limit}
+            return _request(args.base_url, "GET", "/api/events?" + urlencode(params), token=args.token)[1]
         params = {"status": args.status, "limit": args.limit}
         if args.cursor:
             params["cursor"] = args.cursor
         return _request(args.base_url, "GET", "/api/comments?" + urlencode(params), token=args.token)[1]
+    if args.command == "events" and args.events_command == "list":
+        params = {"limit": args.limit}
+        if args.since:
+            params["cursor"] = args.since
+        return _request(args.base_url, "GET", "/api/events?" + urlencode(params), token=args.token)[1]
+    if args.command == "events" and args.events_command == "deliveries":
+        return {"items": _request(
+            args.base_url, "GET", f"/api/events/{quote(args.event_id, safe='')}/deliveries", token=args.token
+        )[1]}
     if args.command == "show":
         artifact = _request(args.base_url, "GET", f"/api/artifacts/{quote(args.artifact_id, safe='')}", token=args.token)[1]
         current_version = _request(
@@ -285,9 +417,15 @@ def _run(args: argparse.Namespace) -> Any:
             params["include_archived"] = "true"
         if args.comment_status:
             params["comment_status"] = args.comment_status
+        if args.project:
+            params["project"] = args.project
+        if args.source_agent:
+            params["source_agent"] = args.source_agent
+        for tag in args.tags:
+            params.setdefault("tag", []).append(tag)
         if args.cursor:
             params["cursor"] = args.cursor
-        return _request(args.base_url, "GET", "/api/search?" + urlencode(params), token=args.token)[1]
+        return _request(args.base_url, "GET", "/api/search?" + urlencode(params, doseq=True), token=args.token)[1]
     if args.command == "versions":
         return _request(
             args.base_url,
@@ -295,6 +433,13 @@ def _run(args: argparse.Namespace) -> Any:
             f"/api/artifacts/{quote(args.artifact_id, safe='')}/versions",
             token=args.token,
         )[1]
+    if args.command == "audit" and args.audit_command == "list":
+        params = {"limit": args.limit}
+        if args.resource_id:
+            params["resource_id"] = args.resource_id
+        if args.agent_id:
+            params["agent_id"] = args.agent_id
+        return _request(args.base_url, "GET", "/api/operations?" + urlencode(params), token=args.token)[1]
     if args.command == "diff":
         artifact = _request(args.base_url, "GET", f"/api/artifacts/{quote(args.artifact_id, safe='')}", token=args.token)[1]
         version_a = _request(args.base_url, "GET", f"/api/versions/{quote(args.version_a, safe='')}", token=args.token)[1]
@@ -329,6 +474,10 @@ def _run(args: argparse.Namespace) -> Any:
             f"/api/artifacts/{quote(args.artifact_id, safe='')}/{suffix}",
             {},
             args.token,
+            None,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )[1]
     if args.command == "rename":
         return _request(
@@ -337,6 +486,10 @@ def _run(args: argparse.Namespace) -> Any:
             f"/api/artifacts/{quote(args.artifact_id, safe='')}/rename",
             {"title": args.title},
             args.token,
+            None,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )[1]
     if args.command == "duplicate":
         return _request(
@@ -345,6 +498,10 @@ def _run(args: argparse.Namespace) -> Any:
             f"/api/artifacts/{quote(args.artifact_id, safe='')}/duplicate",
             {"created_by": args.created_by},
             args.token,
+            None,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )[1]
     if args.command == "restore":
         return _request(
@@ -357,15 +514,24 @@ def _run(args: argparse.Namespace) -> Any:
                 "created_by": args.created_by,
             },
             args.token,
+            None,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )[1]
     if args.command == "create":
         content = _read_content(args.content, args.file)
+        metadata = _read_metadata(args.metadata_json, args.metadata_file)
         _, result = _request(
             args.base_url,
             "POST",
             "/api/artifacts",
-            {"title": args.title, "kind": args.kind, "content": content, "created_by": args.created_by},
+            {"title": args.title, "kind": args.kind, "content": content, "created_by": args.created_by, "metadata": metadata},
             args.token,
+            args.idempotency_key,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )
         return result
     if args.command == "list":
@@ -374,7 +540,15 @@ def _run(args: argparse.Namespace) -> Any:
             params["query"] = args.query
         if args.include_archived:
             params["include_archived"] = "true"
-        path = "/api/artifacts" + ("?" + urlencode(params) if params else "")
+        if args.kind:
+            params["kind"] = args.kind
+        if args.project:
+            params["project"] = args.project
+        if args.source_agent:
+            params["source_agent"] = args.source_agent
+        for tag in args.tags:
+            params.setdefault("tag", []).append(tag)
+        path = "/api/artifacts" + ("?" + urlencode(params, doseq=True) if params else "")
         _, result = _request(args.base_url, "GET", path, token=args.token)
         return result
     if args.command == "get":
@@ -393,6 +567,8 @@ def _run(args: argparse.Namespace) -> Any:
             "created_by": args.created_by,
             "expected_current_version_id": args.expected_current_version_id,
             "change_summary": args.change_summary,
+            "metadata": _read_metadata(args.metadata_json, args.metadata_file),
+            "source_comment_id": args.source_comment_id,
         }
         if args.old_str is not None:
             payload["content"] = None
@@ -402,6 +578,10 @@ def _run(args: argparse.Namespace) -> Any:
             f"/api/artifacts/{quote(args.artifact_id, safe='')}/versions",
             payload,
             args.token,
+            args.idempotency_key,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )
         return result
     if args.command == "feedback":
@@ -418,6 +598,10 @@ def _run(args: argparse.Namespace) -> Any:
             f"/api/versions/{quote(args.version_id, safe='')}/comments",
             {"artifact_id": args.artifact_id, "body": args.body, "anchor": anchor},
             args.token,
+            args.idempotency_key,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )
         return result
     if args.command == "address":
@@ -427,6 +611,10 @@ def _run(args: argparse.Namespace) -> Any:
             f"/api/comments/{quote(args.comment_id, safe='')}/events",
             {"status": args.status, "actor": args.actor, "addressed_in_version_id": args.version_id},
             args.token,
+            args.idempotency_key,
+            args.agent_id,
+            args.agent_run_id,
+            args.operation_id,
         )
         return result
     raise CLIError(f"unknown command: {args.command}")

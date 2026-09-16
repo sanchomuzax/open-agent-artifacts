@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import mimetypes
 import os
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.request import Request as URLRequest, urlopen
 
 from . import __version__
 from .presentation import make_presentation
@@ -31,12 +34,51 @@ class ArtifactHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, server_address, handler_class, store: Store, api_token: str | None, static_dir: Path, allowed_hosts: set[str]):
+    def __init__(self, server_address, handler_class, store: Store, api_token: str | None, static_dir: Path, allowed_hosts: set[str], webhook_url: str | None = None, webhook_secret: str | None = None, authenticated_agent_id: str | None = None):
         super().__init__(server_address, handler_class)
         self.store = store
         self.api_token = api_token
         self.static_dir = static_dir.resolve()
         self.allowed_hosts = allowed_hosts
+        self.webhook_url = webhook_url
+        self.webhook_secret = webhook_secret
+        self.authenticated_agent_id = authenticated_agent_id
+
+    def dispatch_event(self, event_id: str | None) -> None:
+        if not event_id or not self.webhook_url or not self.webhook_secret:
+            return
+        parsed = urlsplit(self.webhook_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            self.store.record_event_delivery(event_id, 1, "failed", error="webhook URL must use http or https")
+            return
+        body = _json_bytes({"event": self.store.get_event(event_id)})
+        signature = hmac.new(self.webhook_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+        for attempt in range(1, 4):
+            request = URLRequest(
+                self.webhook_url,
+                data=body,
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "X-OAA-Event-ID": event_id,
+                    "X-OAA-Delivery-Attempt": str(attempt),
+                    "X-OAA-Signature": f"sha256={signature}",
+                },
+            )
+            try:
+                with urlopen(request, timeout=2) as response:
+                    status = response.status
+                self.store.record_event_delivery(event_id, attempt, "delivered", response_code=status)
+                if 200 <= status < 300:
+                    return
+                error = f"webhook returned HTTP {status}"
+            except Exception as exc:
+                status = getattr(exc, "code", None)
+                error = f"webhook delivery failed: {type(exc).__name__}"
+            self.store.record_event_delivery(event_id, attempt, "failed", response_code=status, error=error)
+            if attempt < 3:
+                time.sleep(0.05 * (2 ** (attempt - 1)))
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -101,6 +143,11 @@ def _handler_for(store: Store, api_token: str | None):
             authorization = self.headers.get("Authorization", "")
             supplied = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
             if supplied and hmac.compare_digest(supplied, expected):
+                configured_agent = self.server.authenticated_agent_id
+                claimed_agent = self.headers.get("X-OAA-Agent-ID")
+                if configured_agent and claimed_agent and claimed_agent != configured_agent:
+                    self._error(HTTPStatus.FORBIDDEN, "agent_impersonation", "agent identity does not match the authenticated principal")
+                    return False
                 return True
             self.send_response(HTTPStatus.UNAUTHORIZED)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -145,6 +192,13 @@ def _handler_for(store: Store, api_token: str | None):
                         self._error(HTTPStatus.FORBIDDEN, "cross_origin_request", "foreign origin rejected")
                         return False
             return True
+
+        def _operation_metadata(self) -> dict[str, str | None]:
+            return {
+                "agent_id": self.headers.get("X-OAA-Agent-ID") or self.server.authenticated_agent_id,
+                "agent_run_id": self.headers.get("X-OAA-Agent-Run-ID"),
+                "operation_id": self.headers.get("X-OAA-Operation-ID"),
+            }
 
         def _read_json(self) -> dict[str, Any] | None:
             raw_length = self.headers.get("Content-Length")
@@ -210,6 +264,7 @@ def _handler_for(store: Store, api_token: str | None):
             segments = self._segments(path)
             try:
                 params = parse_qs(parsed.query)
+                tags = [tag for value in params.get("tag", []) + params.get("tags", []) for tag in value.split(",") if tag]
                 if segments == ["api", "me"]:
                     principal = self.server.store.get_principal(DEFAULT_PRINCIPAL_ID)
                     self._send_json(HTTPStatus.OK, {
@@ -240,7 +295,23 @@ def _handler_for(store: Store, api_token: str | None):
                         comment_status=status,
                         limit=limit,
                         cursor=params.get("cursor", [None])[0],
+                        tags=tags,
+                        project=params.get("project", [None])[0],
+                        source_agent=params.get("source_agent", [None])[0],
                     ))
+                elif segments == ["api", "operations"]:
+                    self._send_json(HTTPStatus.OK, self.server.store.list_operations(
+                        resource_id=params.get("resource_id", [None])[0],
+                        agent_id=params.get("agent_id", [None])[0],
+                        limit=int(params.get("limit", ["100"])[0]),
+                    ))
+                elif segments == ["api", "events"]:
+                    self._send_json(HTTPStatus.OK, self.server.store.list_events(
+                        cursor=params.get("cursor", [None])[0],
+                        limit=int(params.get("limit", ["50"])[0]),
+                    ))
+                elif len(segments) == 4 and segments[1] == "events" and segments[3] == "deliveries":
+                    self._send_json(HTTPStatus.OK, self.server.store.list_event_deliveries(segments[2]))
                 elif segments == ["api", "artifacts"] and any(key in params for key in ("scope", "limit", "cursor", "view")):
                     query = params.get("q", params.get("query", [None]))[0]
                     scope = params.get("scope", ["all"])[0]
@@ -251,12 +322,26 @@ def _handler_for(store: Store, api_token: str | None):
                         return
                     cursor = params.get("cursor", [None])[0]
                     self._send_json(HTTPStatus.OK, self.server.store.list_catalog(
-                        scope=scope, query=query, limit=limit, cursor=cursor,
+                        scope=scope,
+                        query=query,
+                        limit=limit,
+                        cursor=cursor,
+                        tags=tags,
+                        project=params.get("project", [None])[0],
+                        source_agent=params.get("source_agent", [None])[0],
+                        kind=params.get("kind", [None])[0],
                     ))
                 elif segments == ["api", "artifacts"]:
                     query = params.get("query", [None])[0]
                     include_archived = parse_qs(parsed.query).get("include_archived", ["false"])[0] == "true"
-                    self._send_json(HTTPStatus.OK, self.server.store.list_artifacts(query, include_archived))
+                    self._send_json(HTTPStatus.OK, self.server.store.list_artifacts(
+                        query,
+                        include_archived,
+                        tags=tags,
+                        project=params.get("project", [None])[0],
+                        source_agent=params.get("source_agent", [None])[0],
+                        kind=params.get("kind", [None])[0],
+                    ))
                 elif len(segments) == 3 and segments[1] == "artifacts":
                     self._send_json(HTTPStatus.OK, self.server.store.get_artifact(segments[2]))
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "versions":
@@ -264,6 +349,8 @@ def _handler_for(store: Store, api_token: str | None):
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "comments":
                     status = parse_qs(parsed.query).get("status", [None])[0]
                     self._send_json(HTTPStatus.OK, self.server.store.list_comments(segments[2], status))
+                elif len(segments) == 5 and segments[1] == "artifacts" and segments[3] == "metadata" and segments[4] == "events":
+                    self._send_json(HTTPStatus.OK, self.server.store.list_metadata_events(segments[2]))
                 elif len(segments) == 3 and segments[1] == "versions":
                     self._send_json(HTTPStatus.OK, self.server.store.get_version(segments[2]))
                 elif len(segments) == 4 and segments[1] == "versions" and segments[3] == "presentation":
@@ -299,48 +386,94 @@ def _handler_for(store: Store, api_token: str | None):
                 return
             try:
                 if segments == ["api", "artifacts"]:
+                    operation = self._operation_metadata()
                     result = self.server.store.create_artifact(
                         payload["title"], payload["kind"], payload["content"],
-                        payload.get("created_by", "api"), self.headers.get("Idempotency-Key")
+                        payload.get("created_by", "api"), self.headers.get("Idempotency-Key"),
+                        agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
+                        metadata=payload.get("metadata"),
                     )
+                    self.server.dispatch_event(result.get("event_id"))
                     self._send_json(HTTPStatus.CREATED, result)
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "versions":
+                    operation = self._operation_metadata()
                     result = self.server.store.publish_version(
                         segments[2], payload.get("content"), payload.get("created_by", "api"),
                         expected_current_version_id=payload["expected_current_version_id"],
                         change_summary=payload.get("change_summary", ""),
                         old_str=payload.get("old_str"), new_str=payload.get("new_str"),
                         idempotency_key=self.headers.get("Idempotency-Key"),
+                        agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
+                        metadata=payload.get("metadata"),
+                        source_comment_id=payload.get("source_comment_id"),
                     )
+                    self.server.dispatch_event(result.get("event_id"))
                     self._send_json(HTTPStatus.CREATED, result)
                 elif len(segments) == 4 and segments[1] == "versions" and segments[3] == "comments":
+                    operation = self._operation_metadata()
                     result = self.server.store.create_comment(
-                        payload["artifact_id"], segments[2], payload["body"], payload["anchor"]
+                        payload["artifact_id"], segments[2], payload["body"], payload["anchor"],
+                        self.headers.get("Idempotency-Key"),
+                        agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
                     )
+                    self.server.dispatch_event(result.get("event_id"))
                     self._send_json(HTTPStatus.CREATED, result)
                 elif len(segments) == 4 and segments[1] == "comments" and segments[3] == "events":
+                    operation = self._operation_metadata()
                     result = self.server.store.add_comment_event(
                         segments[2], payload["status"], payload.get("actor", "api"),
-                        payload.get("addressed_in_version_id"),
+                        payload.get("addressed_in_version_id"), self.headers.get("Idempotency-Key"),
+                        agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
                     )
+                    self.server.dispatch_event(result.get("event_id"))
                     self._send_json(HTTPStatus.CREATED, result)
+                elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "metadata":
+                    operation = self._operation_metadata()
+                    result = self.server.store.set_metadata(
+                        segments[2],
+                        payload["metadata"],
+                        payload.get("actor", "api"),
+                        agent_id=operation["agent_id"],
+                        agent_run_id=operation["agent_run_id"],
+                        operation_id=operation["operation_id"],
+                    )
+                    self.server.dispatch_event(result.get("event_id"))
+                    self._send_json(HTTPStatus.OK, result)
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] in {"pin", "unpin"}:
+                    operation = self._operation_metadata()
                     self._send_json(
                         HTTPStatus.OK,
-                        self.server.store.set_pinned(segments[2], segments[3] == "pin"),
+                        self.server.store.set_pinned(
+                            segments[2], segments[3] == "pin",
+                            agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
+                        ),
                     )
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "archive":
-                    self._send_json(HTTPStatus.OK, self.server.store.archive_artifact(segments[2]))
+                    operation = self._operation_metadata()
+                    self._send_json(HTTPStatus.OK, self.server.store.archive_artifact(
+                        segments[2], agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
+                    ))
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "visit":
-                    self._send_json(HTTPStatus.OK, self.server.store.record_visit(segments[2]))
+                    operation = self._operation_metadata()
+                    self._send_json(HTTPStatus.OK, self.server.store.record_visit(
+                        segments[2], agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
+                    ))
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "rename":
-                    self._send_json(HTTPStatus.OK, self.server.store.rename_artifact(segments[2], payload["title"]))
+                    operation = self._operation_metadata()
+                    self._send_json(HTTPStatus.OK, self.server.store.rename_artifact(
+                        segments[2], payload["title"], agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
+                    ))
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "duplicate":
-                    self._send_json(HTTPStatus.CREATED, self.server.store.duplicate_artifact(segments[2], payload.get("created_by", "api")))
+                    operation = self._operation_metadata()
+                    self._send_json(HTTPStatus.CREATED, self.server.store.duplicate_artifact(
+                        segments[2], payload.get("created_by", "api"), agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
+                    ))
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "restore":
+                    operation = self._operation_metadata()
                     self._send_json(HTTPStatus.CREATED, self.server.store.restore_version(
                         segments[2], payload["version_id"], payload.get("created_by", "api"),
                         expected_current_version_id=payload["expected_current_version_id"],
+                        agent_id=operation["agent_id"], agent_run_id=operation["agent_run_id"], operation_id=operation["operation_id"],
                     ))
                 else:
                     self._error(HTTPStatus.NOT_FOUND, "not_found", "API resource not found")
@@ -359,13 +492,22 @@ def create_server(
     api_token: str | None = None,
     static_dir: str | Path | None = None,
     allowed_hosts: list[str] | None = None,
+    webhook_url: str | None = None,
+    webhook_secret: str | None = None,
+    authenticated_agent_id: str | None = None,
 ) -> ArtifactHTTPServer:
+    if webhook_url is None:
+        webhook_url = os.environ.get("OAA_WEBHOOK_URL")
+    if webhook_secret is None:
+        webhook_secret = os.environ.get("OAA_WEBHOOK_SECRET")
+    if authenticated_agent_id is None:
+        authenticated_agent_id = os.environ.get("OAA_AGENT_ID")
     store = Store(db_path)
     if static_dir is None:
         working_directory_web = Path.cwd() / "web"
         static_dir = working_directory_web if working_directory_web.is_dir() else Path(__file__).resolve().parents[2] / "web"
     normalized_hosts = {item.lower() for item in (allowed_hosts or [host, "127.0.0.1", "localhost", "::1"])}
-    return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir), normalized_hosts)
+    return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir), normalized_hosts, webhook_url, webhook_secret, authenticated_agent_id)
 
 
 def sync_project_description(store: Store, static_dir: str | Path) -> dict[str, Any] | None:

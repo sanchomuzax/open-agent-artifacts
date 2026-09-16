@@ -309,3 +309,219 @@ def test_cli_checks_comment_anchor_status_and_unicode_offsets(cli_server, capsys
     )
     missing = run_cli(cli_server, capsys, "anchor", "check", comment["id"], "--version", current["id"])
     assert missing["status"] == "missing"
+
+
+def test_cli_idempotency_keys_make_retries_safe(cli_server, capsys):
+    first = run_cli(
+        cli_server,
+        capsys,
+        "create",
+        "--title",
+        "Retry-safe",
+        "--kind",
+        "text",
+        "--content",
+        "same",
+        "--idempotency-key",
+        "create-retry-1",
+    )
+    repeated = run_cli(
+        cli_server,
+        capsys,
+        "create",
+        "--title",
+        "Retry-safe",
+        "--kind",
+        "text",
+        "--content",
+        "same",
+        "--idempotency-key",
+        "create-retry-1",
+    )
+    assert repeated["id"] == first["id"]
+    assert len(cli_server.store.list_artifacts()) == 1
+
+    second = run_cli(
+        cli_server,
+        capsys,
+        "publish",
+        first["id"],
+        "--content",
+        "next",
+        "--expected-current-version-id",
+        first["current_version_id"],
+        "--idempotency-key",
+        "publish-retry-1",
+    )
+    repeated_publish = run_cli(
+        cli_server,
+        capsys,
+        "publish",
+        first["id"],
+        "--content",
+        "next",
+        "--expected-current-version-id",
+        first["current_version_id"],
+        "--idempotency-key",
+        "publish-retry-1",
+    )
+    assert repeated_publish["id"] == second["id"]
+    assert len(cli_server.store.list_versions(first["id"])) == 2
+
+    exit_code = main([
+        "--base-url", f"http://127.0.0.1:{cli_server.server_port}",
+        "create", "--title", "Retry-safe", "--kind", "text", "--content", "different",
+        "--idempotency-key", "create-retry-1",
+    ])
+    error = capsys.readouterr()
+    assert exit_code == 1
+    assert "idempotency" in error.err
+
+
+def test_cli_idempotency_keys_cover_feedback_and_address(cli_server, capsys):
+    created = run_cli(cli_server, capsys, "create", "--title", "Feedback retry", "--kind", "text", "--content", "review")
+    args = (
+        "feedback", created["current_version_id"], "--artifact-id", created["id"],
+        "--body", "Please review.", "--exact", "review", "--idempotency-key", "comment-retry-1",
+    )
+    first = run_cli(cli_server, capsys, *args)
+    repeated = run_cli(cli_server, capsys, *args)
+    assert repeated["id"] == first["id"]
+    assert len(cli_server.store.list_comments(created["id"])) == 1
+
+    address_args = (
+        "address", first["id"], "--status", "addressed", "--version-id", created["current_version_id"],
+        "--idempotency-key", "event-retry-1",
+    )
+    addressed = run_cli(cli_server, capsys, *address_args)
+    repeated_address = run_cli(cli_server, capsys, *address_args)
+    assert repeated_address["id"] == addressed["id"]
+    assert len(cli_server.store.list_comment_events(first["id"])) == 1
+
+
+def test_cli_records_agent_run_and_operation_audit(cli_server, capsys):
+    created = run_cli(
+        cli_server,
+        capsys,
+        "create",
+        "--title",
+        "Audited artifact",
+        "--kind",
+        "text",
+        "--content",
+        "audited",
+        "--agent-id",
+        "agent-test",
+        "--agent-run-id",
+        "run-test-1",
+        "--operation-id",
+        "operation-test-1",
+    )
+    assert created["operation_id"] == "operation-test-1"
+    operations = run_cli(cli_server, capsys, "audit", "list", "--agent-id", "agent-test")
+    assert len(operations) == 1
+    assert operations[0]["id"] == "operation-test-1"
+    assert operations[0]["agent_id"] == "agent-test"
+    assert operations[0]["agent_run_id"] == "run-test-1"
+    assert operations[0]["resource_id"] == created["id"]
+
+
+def test_reused_operation_id_is_rejected_without_idempotency_key(cli_server, capsys):
+    first = run_cli(
+        cli_server,
+        capsys,
+        "create",
+        "--title",
+        "Operation identity",
+        "--kind",
+        "text",
+        "--content",
+        "same",
+        "--operation-id",
+        "operation-reuse-1",
+    )
+    exit_code = main([
+        "--base-url",
+        f"http://127.0.0.1:{cli_server.server_port}",
+        "create",
+        "--title",
+        "Operation identity",
+        "--kind",
+        "text",
+        "--content",
+        "same",
+        "--operation-id",
+        "operation-reuse-1",
+    ])
+    error = capsys.readouterr()
+    assert exit_code == 1
+    assert "operation ID" in error.err
+    assert len(cli_server.store.list_artifacts()) == 1
+    assert cli_server.store.get_artifact(first["id"])["id"] == first["id"]
+
+
+def test_publish_audit_links_source_feedback(cli_server, capsys):
+    created = run_cli(cli_server, capsys, "create", "--title", "Feedback source", "--kind", "text", "--content", "old")
+    comment = run_cli(
+        cli_server,
+        capsys,
+        "feedback",
+        created["current_version_id"],
+        "--artifact-id",
+        created["id"],
+        "--body",
+        "Please update.",
+        "--exact",
+        "old",
+    )
+    published = run_cli(
+        cli_server,
+        capsys,
+        "publish",
+        created["id"],
+        "--content",
+        "updated",
+        "--expected-current-version-id",
+        created["current_version_id"],
+        "--source-comment-id",
+        comment["id"],
+        "--agent-id",
+        "agent-test",
+    )
+    operations = run_cli(cli_server, capsys, "audit", "list", "--resource-id", published["id"])
+    assert operations[0]["source_comment_id"] == comment["id"]
+
+
+def test_cli_event_feed_polls_with_a_stable_cursor(cli_server, capsys):
+    created = run_cli(cli_server, capsys, "create", "--title", "Events", "--kind", "text", "--content", "first")
+    published = run_cli(
+        cli_server,
+        capsys,
+        "publish",
+        created["id"],
+        "--content",
+        "second",
+        "--expected-current-version-id",
+        created["current_version_id"],
+    )
+    comment = run_cli(
+        cli_server,
+        capsys,
+        "feedback",
+        published["id"],
+        "--artifact-id",
+        created["id"],
+        "--body",
+        "Review this.",
+        "--exact",
+        "second",
+    )
+    first_page = run_cli(cli_server, capsys, "events", "list", "--limit", "2")
+    assert len(first_page["items"]) == 2
+    assert first_page["items"][0]["event_type"] == "version.created"
+    assert first_page["next_cursor"]
+    second_page = run_cli(cli_server, capsys, "events", "list", "--since", first_page["next_cursor"], "--limit", "10")
+    assert all(item["event_id"] not in {x["event_id"] for x in first_page["items"]} for item in second_page["items"])
+    assert any(item["event_type"] == "comment.created" and item["comment_id"] == comment["id"] for item in second_page["items"])
+    inbox_events = run_cli(cli_server, capsys, "inbox", "--since", first_page["next_cursor"])
+    assert inbox_events["items"] == second_page["items"]

@@ -78,6 +78,21 @@ def test_idempotency_returns_original_create_result(tmp_path):
     assert len(store.list_artifacts()) == 1
 
 
+def test_idempotency_survives_store_reopen(tmp_path):
+    store = make_store(tmp_path)
+    first = store.create_artifact("Persistent retry", "text", "content", "test", "persisted-key")
+    reopened = Store(tmp_path / "test.db")
+    second = reopened.create_artifact("Persistent retry", "text", "content", "test", "persisted-key")
+    assert second == first
+    assert len(reopened.list_artifacts()) == 1
+
+
+def test_event_cursor_rejects_invalid_shape(tmp_path):
+    store = make_store(tmp_path)
+    with pytest.raises(ValidationError, match="event cursor is invalid"):
+        store.list_events(cursor="not-a-cursor")
+
+
 def test_pinning_and_catalog_preview_are_persisted(tmp_path):
     store = make_store(tmp_path)
     first = store.create_artifact("First report", "markdown", "# First\nA useful preview.", "test")

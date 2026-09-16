@@ -27,7 +27,11 @@ The shortest agent workflow is:
 5. Publish a new version with `artifactctl publish`, passing the current version ID.
 6. Read the new version back before saying the feedback was addressed.
 
-The repository includes the complete command examples in [`docs/agent-integration.md`](docs/agent-integration.md). The `integrations/hermes/SKILL.md` file is the Hermes-specific operational skill; `AGENTS.md` is only the public contributor guide and is not the artifact runtime configuration.
+The repository includes the complete command examples in [`docs/agent-integration.md`](docs/agent-integration.md). After installing `artifactctl`, install the bundled Hermes skill with `artifactctl install-agent-skill --agent hermes`; it follows `HERMES_HOME` (including named profiles), reports its target and SHA-256, and never overwrites different user-owned content without `--force`. `AGENTS.md` is only the public contributor guide and is not the artifact runtime configuration.
+
+Artifacts carry bounded structured metadata (`tags`, `source_agent`, `project`, `purpose`, and `content_language`) with schema version 1. Agents can filter the catalog and search by these fields. Metadata is returned consistently by the API and CLI, changes are audited, and immutable content versions remain unchanged.
+
+The repository is also a portable Hermes Agent Plugins v1 package: [`plugin.json`](plugin.json) declares the plugin and [`skills/open-agent-artifacts/SKILL.md`](skills/open-agent-artifacts/SKILL.md) supplies the workflow skill. It contains no MCP server or credentials; enablement and catalog admission remain explicit user/maintainer actions.
 
 Comments are stored feedback, not automatic commands. The service does not push comments to an agent by itself. An agent sees them when it is explicitly asked to process feedback or when a separately configured polling/webhook integration fetches them. A comment alone must never authorize unrelated or destructive actions.
 

@@ -1,8 +1,11 @@
 import json
+import hashlib
+import hmac
 import sys
 import threading
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -85,6 +88,52 @@ def test_create_publish_and_comment_flow(running_server):
     assert [item["id"] for item in comments] == [comment["id"]]
 
 
+def test_optional_webhook_is_signed_retried_and_recorded(tmp_path):
+    state = {"attempts": 0, "body": b"", "signature": ""}
+
+    class HookHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_POST(self):
+            state["attempts"] += 1
+            state["body"] = self.rfile.read(int(self.headers["Content-Length"]))
+            state["signature"] = self.headers.get("X-OAA-Signature", "")
+            self.send_response(500 if state["attempts"] < 3 else 204)
+            self.end_headers()
+
+    hook = ThreadingHTTPServer(("127.0.0.1", 0), HookHandler)
+    hook_thread = threading.Thread(target=hook.serve_forever, daemon=True)
+    hook_thread.start()
+    app = create_server(
+        tmp_path / "api.db",
+        webhook_url=f"http://127.0.0.1:{hook.server_port}/events",
+        webhook_secret="test-webhook-secret",
+    )
+    app_thread = threading.Thread(target=app.serve_forever, daemon=True)
+    app_thread.start()
+    try:
+        status, artifact = request(
+            app,
+            "POST",
+            "/api/artifacts",
+            {"title": "Webhook", "kind": "text", "content": "payload", "created_by": "test"},
+        )
+        assert status == 201
+        assert state["attempts"] == 3
+        expected = hmac.new(b"test-webhook-secret", state["body"], hashlib.sha256).hexdigest()
+        assert state["signature"] == f"sha256={expected}"
+        deliveries = app.store.list_event_deliveries(artifact["event_id"])
+        assert [item["status"] for item in deliveries] == ["failed", "failed", "delivered"]
+    finally:
+        app.shutdown()
+        app.server_close()
+        app_thread.join(timeout=3)
+        hook.shutdown()
+        hook.server_close()
+        hook_thread.join(timeout=3)
+
+
 def test_stale_publish_returns_conflict_without_new_version(running_server):
     status, artifact = request(
         running_server,
@@ -123,6 +172,37 @@ def test_configured_token_protects_api(running_server):
     status, health = request(running_server, "GET", "/healthz")
     assert status == 200
     assert health["status"] == "ok"
+
+
+def test_authenticated_agent_id_cannot_be_impersonated(tmp_path):
+    server = create_server(tmp_path / "identity.db", api_token="test-token", authenticated_agent_id="agent-a")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _ = request(
+            server,
+            "POST",
+            "/api/artifacts",
+            {"title": "Identity", "kind": "text", "content": "safe", "created_by": "agent-a"},
+            token="test-token",
+            headers={"X-OAA-Agent-ID": "agent-b"},
+        )
+        assert status == 403
+        status, artifact = request(
+            server,
+            "POST",
+            "/api/artifacts",
+            {"title": "Identity", "kind": "text", "content": "safe", "created_by": "agent-a"},
+            token="test-token",
+            headers={"X-OAA-Agent-ID": "agent-a"},
+        )
+        assert status == 201
+        operations = server.store.list_operations(resource_id=artifact["id"])
+        assert operations[0]["agent_id"] == "agent-a"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
 
 
 def test_pin_endpoint_round_trip(running_server):

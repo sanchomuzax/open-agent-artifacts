@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.11 — 2026-09-16
+
+- Add durable event polling, optional signed webhook delivery, agent identity, operation audit, and idempotent writes.
+- Link published versions to their source feedback and reject operation-ID reuse without an idempotency key.
+- Add a profile-safe, idempotent `artifactctl install-agent-skill` command with checksum/version readback.
+- Add bounded, validated artifact metadata with API/CLI filters and an auditable metadata history.
+- Add a Portable Agent Plugins v1 manifest and bundled Hermes workflow skill.
+
 ## 0.2.10 — 2026-09-16
 
 - Add lifecycle, version-diff, and comment-anchor commands for agent workflows.
