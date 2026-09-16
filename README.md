@@ -10,13 +10,7 @@ The workspace opens on a catalog with visual previews. Markdown opens as a real 
 
 ## Project description
 
-### English
-
 Open Agent Artifacts is a local-first review workspace for deliverables produced by AI agents. It provides stable artifact links, a searchable catalog, rendered Markdown, isolated HTML presentation, immutable version history, anchored feedback, pinning, and restore-as-new-version. The artifact service owns storage and review state; agents remain responsible for generating content and applying requested changes. The default deployment uses SQLite and keeps runtime data outside the public repository.
-
-### Magyar
-
-Az Open Agent Artifacts egy helyi működésre épülő ellenőrzési munkatér MI-agentek által készített anyagokhoz. Stabil artefaktumlinkeket, kereshető katalógust, renderelt Markdownt, elkülönített HTML-megjelenítést, immutábilis verzióelőzményeket, szövegrészlethez kötött visszajelzést, pinelést és korábbi verzió új változatként történő visszaállítását biztosítja. A tárolást és a review-állapotot az artefaktum-szolgáltatás kezeli; a tartalom elkészítéséért és a kért módosításokért továbbra is az agent felel. Az alapértelmezett telepítés SQLite-ot használ, a futásidejű adatokat pedig a nyilvános repón kívül tartja.
 
 The live workspace—not a repository HTML file—is the primary destination for artifact requests. GitHub contains the source code and documentation.
 
