@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 2026-09-16
+
+- Ensure HTML preview iframes do not intercept catalog-card activation.
+- Keep the live catalog and canonical project-description artifact aligned with the patch release.
+
 ## 0.2.0 — 2026-09-15
 
 - Replace the split review shell with a full-width artifact catalog and separate artifact workspace.
