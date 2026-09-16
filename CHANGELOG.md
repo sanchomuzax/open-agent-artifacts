@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.6 — 2026-09-16
+
+- Replace the broken repository HTML link with a directly readable English README description.
+- Show the local hour and minute for every version-history entry.
+
 ## 0.2.5 — 2026-09-16
 
 - Harden HTTP request boundaries, HTML sandboxing, and canonical project-description synchronization.
