@@ -943,7 +943,24 @@
         event.preventDefault();
         $("catalog-search")?.focus();
       }
-      if (event.key === "Escape") closeComposer();
+      if (event.key === "Escape") {
+        closeComposer();
+        if (state.historyOpen) {
+          state.historyOpen = false;
+          renderVersionDrawer();
+        }
+        const titleMenu = $("title-menu");
+        if (titleMenu) titleMenu.hidden = true;
+      }
+    });
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (state.historyOpen && !target.closest("#version-drawer, #version-switcher, #title-menu")) {
+        state.historyOpen = false;
+        renderVersionDrawer();
+      }
+      const titleMenu = $("title-menu");
+      if (titleMenu && !titleMenu.hidden && !target.closest("#title-menu, .title-menu-trigger")) titleMenu.hidden = true;
     });
   }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4 — 2026-09-16
+
+- Allow the complete rendered artifact to flow with the page instead of clipping at a fixed frame height.
+- Replace the mobile full-height version drawer with a compact viewport-bounded dropdown while preserving version switching and dismissal.
+
 ## 0.2.3 — 2026-09-16
 
 - Replace mini-card list mode with compact pinned-first rows grouped by update time.
