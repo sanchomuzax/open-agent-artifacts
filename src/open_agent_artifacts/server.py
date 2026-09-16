@@ -113,10 +113,14 @@ def _handler_for(store: Store, api_token: str | None):
 
         def _request_boundary_ok(self, state_changing: bool = False) -> bool:
             authority = self.headers.get("Host", "")
+            forwarded_proto = self.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+            request_scheme = forwarded_proto if forwarded_proto in {"http", "https"} else "http"
             try:
                 request_url = urlsplit(f"//{authority}")
                 host = (request_url.hostname or "").rstrip(".").lower()
-                request_port = request_url.port or self.server.server_port
+                request_port = request_url.port
+                if request_port is None:
+                    request_port = 443 if request_scheme == "https" else 80
             except ValueError:
                 host = ""
                 request_port = -1
@@ -137,8 +141,7 @@ def _handler_for(store: Store, api_token: str | None):
                         parsed = urlsplit("")
                         origin_host = ""
                         origin_port = -1
-                    expected_port = request_port or 80
-                    if (parsed.scheme, origin_host, origin_port) != ("http", host, expected_port):
+                    if (parsed.scheme, origin_host, origin_port) != (request_scheme, host, request_port):
                         self._error(HTTPStatus.FORBIDDEN, "cross_origin_request", "foreign origin rejected")
                         return False
             return True
@@ -360,8 +363,15 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=int(os.environ.get("OAA_PORT", "8765")))
     parser.add_argument("--api-token", default=os.environ.get("OAA_API_TOKEN"))
     parser.add_argument("--static-dir", default=os.environ.get("OAA_STATIC_DIR"))
+    parser.add_argument("--allowed-host", action="append")
     args = parser.parse_args()
-    server = create_server(Path(args.db).expanduser(), args.host, args.port, args.api_token, args.static_dir)
+    env_allowed_hosts = [
+        item.strip() for item in os.environ.get("OAA_ALLOWED_HOSTS", "").split(",") if item.strip()
+    ]
+    allowed_hosts = args.allowed_host or env_allowed_hosts or None
+    server = create_server(
+        Path(args.db).expanduser(), args.host, args.port, args.api_token, args.static_dir, allowed_hosts
+    )
     sync_project_description(server.store, server.static_dir)
     print(f"Open Agent Artifacts listening on http://{args.host}:{args.port}")
     try:

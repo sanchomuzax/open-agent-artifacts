@@ -1,10 +1,12 @@
 import json
+import sys
 import threading
 import urllib.error
 import urllib.request
 
 import pytest
 
+import open_agent_artifacts.server as server_module
 from open_agent_artifacts.server import create_server
 
 
@@ -211,3 +213,52 @@ def test_non_integer_catalog_limit_returns_json_400(running_server):
     status, error = request(running_server, "GET", "/api/artifacts?scope=all&limit=abc")
     assert status == 400
     assert error["error"] == "invalid_request"
+
+
+def test_https_reverse_proxy_origin_is_accepted(tmp_path):
+    server = create_server(tmp_path / "proxy.db", allowed_hosts=["public.example"])
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, artifact = request(
+            server,
+            "POST",
+            "/api/artifacts",
+            {"title": "Proxy", "kind": "text", "content": "ok", "created_by": "test"},
+            headers={
+                "Host": "public.example",
+                "Origin": "https://public.example",
+                "X-Forwarded-Proto": "https",
+            },
+        )
+        assert status == 201
+        assert artifact["title"] == "Proxy"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_main_passes_allowed_hosts_from_environment(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeServer:
+        store = object()
+        static_dir = tmp_path
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    def fake_create_server(*args):
+        captured["args"] = args
+        return FakeServer()
+
+    monkeypatch.setenv("OAA_ALLOWED_HOSTS", "localhost,public.example")
+    monkeypatch.setattr(server_module, "create_server", fake_create_server)
+    monkeypatch.setattr(server_module, "sync_project_description", lambda *_: None)
+    monkeypatch.setattr(sys, "argv", ["oaa-server", "--db", str(tmp_path / "main.db")])
+    server_module.main()
+    assert captured["args"][-1] == ["localhost", "public.example"]

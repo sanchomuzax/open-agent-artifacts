@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.7 — 2026-09-16
+
+- Pass configured Host allowlists through the production CLI entry point.
+- Accept same-origin HTTPS mutations behind an allowlisted reverse proxy.
+
 ## 0.2.6 — 2026-09-16
 
 - Replace the broken repository HTML link with a directly readable English README description.
