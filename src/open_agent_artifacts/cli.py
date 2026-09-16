@@ -101,10 +101,89 @@ def _build_parser() -> argparse.ArgumentParser:
     address.add_argument("--status", required=True, choices=["open", "addressed", "resolved"])
     address.add_argument("--actor", default="artifactctl")
     address.add_argument("--version-id")
+    comments = subparsers.add_parser("comments", help="inspect feedback")
+    comments_subparsers = comments.add_subparsers(dest="comments_command", required=True)
+    comments_list = comments_subparsers.add_parser("list", help="list comments")
+    comments_list.add_argument("--artifact-id")
+    comments_list.add_argument("--status", choices=["open", "addressed", "resolved", "all"], default="open")
+    comments_list.add_argument("--limit", type=int, default=50)
+    comments_list.add_argument("--cursor")
+    comments_get = comments_subparsers.add_parser("get", help="get a comment")
+    comments_get.add_argument("comment_id")
+    comments_events = comments_subparsers.add_parser("events", help="list comment events")
+    comments_events.add_argument("comment_id")
+    inbox = subparsers.add_parser("inbox", help="list open comments across the workspace")
+    inbox.add_argument("--status", choices=["open", "addressed", "resolved", "all"], default="open")
+    inbox.add_argument("--limit", type=int, default=50)
+    inbox.add_argument("--cursor")
+    show = subparsers.add_parser("show", help="show complete artifact context")
+    show.add_argument("artifact_id")
+    show.add_argument("--summary", action="store_true")
+    search = subparsers.add_parser("search", help="search artifact content and feedback")
+    search.add_argument("query")
+    search.add_argument("--kind")
+    search.add_argument("--include-archived", action="store_true")
+    search.add_argument("--comment-status", choices=["open", "addressed", "resolved"])
+    search.add_argument("--limit", type=int, default=50)
+    search.add_argument("--cursor")
     return parser
 
 
 def _run(args: argparse.Namespace) -> Any:
+    if args.command == "comments":
+        if args.comments_command == "list":
+            status = None if args.status == "all" else args.status
+            if args.artifact_id:
+                items = _request(
+                    args.base_url,
+                    "GET",
+                    f"/api/artifacts/{quote(args.artifact_id, safe='')}/comments" + ("?" + urlencode({"status": status}) if status else ""),
+                    token=args.token,
+                )[1]
+                return {"items": items, "next_cursor": None}
+            params = {"status": args.status, "limit": args.limit}
+            if args.cursor:
+                params["cursor"] = args.cursor
+            return _request(args.base_url, "GET", "/api/comments?" + urlencode(params), token=args.token)[1]
+        if args.comments_command == "get":
+            return _request(args.base_url, "GET", f"/api/comments/{quote(args.comment_id, safe='')}", token=args.token)[1]
+        if args.comments_command == "events":
+            items = _request(args.base_url, "GET", f"/api/comments/{quote(args.comment_id, safe='')}/events", token=args.token)[1]
+            return {"items": items}
+    if args.command == "inbox":
+        params = {"status": args.status, "limit": args.limit}
+        if args.cursor:
+            params["cursor"] = args.cursor
+        return _request(args.base_url, "GET", "/api/comments?" + urlencode(params), token=args.token)[1]
+    if args.command == "show":
+        artifact = _request(args.base_url, "GET", f"/api/artifacts/{quote(args.artifact_id, safe='')}", token=args.token)[1]
+        current_version = _request(
+            args.base_url, "GET", f"/api/versions/{quote(artifact['current_version_id'], safe='')}", token=args.token
+        )[1]
+        versions = _request(
+            args.base_url, "GET", f"/api/artifacts/{quote(args.artifact_id, safe='')}/versions", token=args.token
+        )[1]
+        comments = _request(
+            args.base_url, "GET", f"/api/artifacts/{quote(args.artifact_id, safe='')}/comments?status=open", token=args.token
+        )[1]
+        if args.summary:
+            current_version = {
+                **current_version,
+                "content": current_version["content"][:512],
+                "truncated": len(current_version["content"]) > 512,
+            }
+        return {"artifact": artifact, "current_version": current_version, "versions": versions, "comments": comments}
+    if args.command == "search":
+        params = {"q": args.query, "limit": args.limit}
+        if args.kind:
+            params["kind"] = args.kind
+        if args.include_archived:
+            params["include_archived"] = "true"
+        if args.comment_status:
+            params["comment_status"] = args.comment_status
+        if args.cursor:
+            params["cursor"] = args.cursor
+        return _request(args.base_url, "GET", "/api/search?" + urlencode(params), token=args.token)[1]
     if args.command == "create":
         content = _read_content(args.content, args.file)
         _, result = _request(

@@ -203,6 +203,30 @@ def test_catalog_cursor_is_invalidated_by_pin_changes(tmp_path):
         store.list_catalog(limit=1, cursor=first["next_cursor"])
 
 
+def test_global_comment_cursor_pages_without_overlap(tmp_path):
+    store = make_store(tmp_path)
+    artifact = store.create_artifact("Comments", "text", "content", "test")
+    version_id = artifact["current_version_id"]
+    for index in range(3):
+        store.create_comment(artifact["id"], version_id, f"comment {index}", {"exact": str(index)})
+    first = store.list_comments_global(limit=2)
+    second = store.list_comments_global(limit=2, cursor=first["next_cursor"])
+    assert first["next_cursor"]
+    assert {item["id"] for item in first["items"]}.isdisjoint(item["id"] for item in second["items"])
+
+
+def test_search_cursor_pages_without_overlap_and_binds_query(tmp_path):
+    store = make_store(tmp_path)
+    for index in range(3):
+        store.create_artifact(f"Search {index}", "text", f"unique search term {index}", "test")
+    first = store.search("unique search", limit=1)
+    second = store.search("unique search", limit=1, cursor=first["next_cursor"])
+    assert first["next_cursor"]
+    assert {item["artifact_id"] for item in first["items"]}.isdisjoint(item["artifact_id"] for item in second["items"])
+    with pytest.raises(ValidationError, match="does not match"):
+        store.search("different", limit=1, cursor=first["next_cursor"])
+
+
 def test_comments_are_bound_to_version_and_events_are_audited(tmp_path):
     store = make_store(tmp_path)
     artifact = store.create_artifact("A report", "text", "content", "test")

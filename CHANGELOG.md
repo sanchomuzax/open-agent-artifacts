@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.9 — 2026-09-16
+
+- Add agent-facing comment discovery, global feedback inbox, content search, and aggregate artifact show.
+- Add bounded, cursor-based results and document the complete read/review workflow.
+
 ## 0.2.8 — 2026-09-16
 
 - Show date and local time in catalog activity entries.

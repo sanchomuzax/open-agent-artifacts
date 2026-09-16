@@ -217,6 +217,30 @@ def _handler_for(store: Store, api_token: str | None):
                         "multi_user": False,
                         "capabilities": {"identity_scopes": False, "sharing": False},
                     })
+                elif segments == ["api", "comments"]:
+                    status = params.get("status", ["open"])[0]
+                    if status == "all":
+                        status = None
+                    self._send_json(HTTPStatus.OK, self.server.store.list_comments_global(
+                        status=status,
+                        limit=int(params.get("limit", ["50"])[0]),
+                        cursor=params.get("cursor", [None])[0],
+                    ))
+                elif segments == ["api", "search"]:
+                    try:
+                        limit = int(params.get("limit", ["50"])[0])
+                    except ValueError:
+                        self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "limit must be an integer")
+                        return
+                    status = params.get("comment_status", [None])[0]
+                    self._send_json(HTTPStatus.OK, self.server.store.search(
+                        params.get("q", [""])[0],
+                        kind=params.get("kind", [None])[0],
+                        include_archived=params.get("include_archived", ["false"])[0] == "true",
+                        comment_status=status,
+                        limit=limit,
+                        cursor=params.get("cursor", [None])[0],
+                    ))
                 elif segments == ["api", "artifacts"] and any(key in params for key in ("scope", "limit", "cursor", "view")):
                     query = params.get("q", params.get("query", [None]))[0]
                     scope = params.get("scope", ["all"])[0]

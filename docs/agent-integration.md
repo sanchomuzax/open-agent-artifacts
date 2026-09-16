@@ -46,6 +46,15 @@ Supported kinds are `text`, `markdown`, `code`, `html`, `svg`, and `mermaid`. Re
 artifactctl --base-url "$OAA_URL" get ARTIFACT_ID
 ```
 
+For the complete review context in one read-only operation:
+
+```bash
+artifactctl --base-url "$OAA_URL" show ARTIFACT_ID
+artifactctl --base-url "$OAA_URL" show ARTIFACT_ID --summary
+```
+
+`show` returns the artifact metadata, current version content, version history, and open comments. `--summary` bounds the current content excerpt and reports whether it was truncated. It never publishes, edits, or changes comment state.
+
 The HTTP API also provides:
 
 ```text
@@ -55,7 +64,29 @@ GET /api/versions/{version_id}
 GET /api/versions/{version_id}/comments?status=open
 ```
 
-The current `artifactctl` command has no dedicated `comments` subcommand. Use the API endpoints above, or an agent adapter that wraps them, to fetch feedback.
+The CLI exposes the same feedback operations:
+
+```bash
+artifactctl --base-url "$OAA_URL" comments list --status open
+artifactctl --base-url "$OAA_URL" comments list --artifact-id ARTIFACT_ID --status all
+artifactctl --base-url "$OAA_URL" comments get COMMENT_ID
+artifactctl --base-url "$OAA_URL" comments events COMMENT_ID
+artifactctl --base-url "$OAA_URL" inbox
+```
+
+`inbox` is an alias for the global open-comment list. Both list operations return bounded, machine-readable pages with a `next_cursor`; pass that cursor to fetch the next page. Listing feedback does not mark it read or addressed.
+
+## Search
+
+Search covers artifact title, slug, current content, and comment body:
+
+```bash
+artifactctl --base-url "$OAA_URL" search "deployment"
+artifactctl --base-url "$OAA_URL" search "Tailscale" --kind markdown
+artifactctl --base-url "$OAA_URL" search "clarify" --comment-status open
+```
+
+Results identify whether the match is an `artifact` or a `comment`, include stable IDs and bounded excerpts, and return a `next_cursor` for pagination. Search cursors are bound to the query and filters.
 
 ## Publish a new version
 

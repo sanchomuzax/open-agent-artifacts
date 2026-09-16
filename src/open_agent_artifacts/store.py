@@ -813,6 +813,210 @@ class Store:
                 results.append(result)
             return results
 
+    @staticmethod
+    def _encode_comment_cursor(created_at: str, comment_id: str, status: str | None) -> str:
+        payload = {"v": 1, "after": [created_at, comment_id], "status": status}
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_comment_cursor(cursor: str) -> dict[str, Any]:
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            value = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValidationError("comment cursor is invalid") from error
+        if (
+            not isinstance(value, dict)
+            or value.get("v") != 1
+            or not isinstance(value.get("after"), list)
+            or len(value["after"]) != 2
+            or not all(isinstance(item, str) for item in value["after"])
+        ):
+            raise ValidationError("comment cursor is invalid")
+        return value
+
+    def list_comments_global(
+        self,
+        *,
+        status: str | None = "open",
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        if status is not None and status not in {"open", "addressed", "resolved"}:
+            raise ValidationError("invalid comment status")
+        if not 1 <= limit <= 100:
+            raise ValidationError("comment limit must be between 1 and 100")
+        decoded = self._decode_comment_cursor(cursor) if cursor else None
+        if decoded and decoded.get("status") != status:
+            raise ValidationError("comment cursor status does not match request")
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status:
+            clauses.append("c.status = ?")
+            params.append(status)
+        if decoded:
+            created_at, comment_id = decoded["after"]
+            clauses.append("(c.created_at > ? OR (c.created_at = ? AND c.id > ?))")
+            params.extend([created_at, created_at, comment_id])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT c.*, a.title AS artifact_title, v.sequence AS version_sequence
+                    FROM comments c
+                    JOIN artifacts a ON a.id = c.artifact_id
+                    JOIN versions v ON v.id = c.version_id
+                    {where}
+                    ORDER BY c.created_at ASC, c.id ASC
+                    LIMIT ?""",
+                [*params, limit + 1],
+            ).fetchall()
+            items = []
+            for row in rows:
+                item = dict(row)
+                item["anchor"] = json.loads(item.pop("anchor_json"))
+                items.append(item)
+            page = items[:limit]
+            next_cursor = None
+            if len(items) > limit and page:
+                last = page[-1]
+                next_cursor = self._encode_comment_cursor(last["created_at"], last["id"], status)
+            return {"items": page, "next_cursor": next_cursor}
+
+    @staticmethod
+    def _decode_search_cursor(cursor: str) -> dict[str, Any]:
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            value = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValidationError("search cursor is invalid") from error
+        if (
+            not isinstance(value, dict)
+            or value.get("v") != 1
+            or not isinstance(value.get("snapshot"), str)
+            or not isinstance(value.get("query"), str)
+            or not isinstance(value.get("offset"), int)
+            or value["offset"] < 0
+        ):
+            raise ValidationError("search cursor is invalid")
+        return value
+
+    @staticmethod
+    def _encode_search_cursor(query: str, kind: str | None, include_archived: bool, snapshot: str, offset: int) -> str:
+        payload = {
+            "v": 1,
+            "query": query,
+            "kind": kind,
+            "include_archived": include_archived,
+            "snapshot": snapshot,
+            "offset": offset,
+        }
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    def search(
+        self,
+        query: str,
+        *,
+        kind: str | None = None,
+        include_archived: bool = False,
+        comment_status: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        query = _check_text(query, "query", 512).strip()
+        if kind is not None:
+            _check_kind(kind)
+        if comment_status is not None and comment_status not in {"open", "addressed", "resolved"}:
+            raise ValidationError("invalid comment status")
+        if not 1 <= limit <= 100:
+            raise ValidationError("search limit must be between 1 and 100")
+        decoded = self._decode_search_cursor(cursor) if cursor else None
+        with self._connect() as connection:
+            snapshot = decoded["snapshot"] if decoded else connection.execute(
+                "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+            ).fetchone()[0]
+            if decoded and (
+                decoded["query"] != query
+                or decoded.get("kind") != kind
+                or decoded.get("include_archived") != include_archived
+            ):
+                raise ValidationError("search cursor does not match request")
+            pattern = f"%{query}%"
+            artifact_clauses = ["a.content_updated_at <= ?"]
+            artifact_params: list[Any] = [snapshot]
+            if not include_archived:
+                artifact_clauses.append("a.archived_at IS NULL")
+            if kind:
+                artifact_clauses.append("a.kind = ?")
+                artifact_params.append(kind)
+            artifact_clauses.append("(a.title LIKE ? OR a.slug LIKE ? OR v.content LIKE ?)")
+            artifact_params.extend([pattern, pattern, pattern])
+            artifact_rows = connection.execute(
+                f"""SELECT a.id, a.title, a.kind, a.content_updated_at,
+                           v.id AS version_id, v.sequence AS version_sequence,
+                           substr(v.content, 1, 512) AS excerpt,
+                           length(v.content) > 512 AS truncated,
+                           CASE WHEN a.title LIKE ? THEN 'title'
+                                WHEN a.slug LIKE ? THEN 'slug'
+                                ELSE 'content' END AS match_field
+                    FROM artifacts a
+                    JOIN versions v ON v.id = a.current_version_id
+                    WHERE {' AND '.join(artifact_clauses)}""",
+                [pattern, pattern, *artifact_params],
+            ).fetchall()
+            comment_clauses = ["c.created_at <= ?", "c.body LIKE ?"]
+            comment_params: list[Any] = [snapshot, pattern]
+            if comment_status:
+                comment_clauses.append("c.status = ?")
+                comment_params.append(comment_status)
+            comment_rows = connection.execute(
+                f"""SELECT c.*, a.title AS artifact_title, v.sequence AS version_sequence,
+                           substr(c.body, 1, 512) AS body_excerpt,
+                           length(c.body) > 512 AS body_truncated
+                    FROM comments c
+                    JOIN artifacts a ON a.id = c.artifact_id
+                    JOIN versions v ON v.id = c.version_id
+                    WHERE {' AND '.join(comment_clauses)}""",
+                comment_params,
+            ).fetchall()
+            results: list[dict[str, Any]] = []
+            for row in artifact_rows:
+                results.append({
+                    "type": "artifact",
+                    "artifact_id": row["id"],
+                    "title": row["title"],
+                    "kind": row["kind"],
+                    "version_id": row["version_id"],
+                    "version_sequence": row["version_sequence"],
+                    "match": row["match_field"],
+                    "excerpt": row["excerpt"] or "",
+                    "truncated": bool(row["truncated"]),
+                    "_sort_time": row["content_updated_at"],
+                })
+            for row in comment_rows:
+                item = dict(row)
+                item["type"] = "comment"
+                item["comment_id"] = item.pop("id")
+                item["body"] = item.pop("body_excerpt") or ""
+                item["truncated"] = bool(item.pop("body_truncated"))
+                item["match"] = "comment"
+                item["anchor"] = json.loads(item.pop("anchor_json"))
+                item["_sort_time"] = item["created_at"]
+                item.pop("updated_at", None)
+                item.pop("addressed_in_version_id", None)
+                item.pop("artifact_id", None)
+                results.append(item)
+            results.sort(key=lambda item: (item["_sort_time"], item.get("artifact_id", item.get("comment_id", ""))), reverse=True)
+            offset = decoded["offset"] if decoded else 0
+            page = results[offset:offset + limit]
+            next_cursor = None
+            if offset + limit < len(results):
+                next_cursor = self._encode_search_cursor(query, kind, include_archived, snapshot, offset + limit)
+            for item in page:
+                item.pop("_sort_time", None)
+            return {"items": page, "next_cursor": next_cursor, "snapshot": snapshot}
+
     def add_comment_event(
         self,
         comment_id: str,
