@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.8 — 2026-09-16
+
+- Show date and local time in catalog activity entries.
+- Fix pinned card groups so card view uses a full-width, consistent responsive grid.
+
 ## 0.2.7 — 2026-09-16
 
 - Pass configured Host allowlists through the production CLI entry point.

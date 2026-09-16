@@ -371,7 +371,7 @@
     titleLine.append(title, kind);
     body.append(titleLine);
     const activity = item.activity || { kind: "Edited", time: item.content_updated_at };
-    body.append(node("p", "artifact-activity", `${activity.kind} ${formatDate(activity.time)}`));
+    body.append(node("p", "artifact-activity", `${activity.kind} ${formatDateTime(activity.time)}`));
     const footer = node("div", "artifact-card-footer");
     footer.append(node("span", "artifact-comments", `${item.comment_count || 0} comments`));
     footer.append(node("span", "artifact-version", `v${item.current_version_sequence || 1}`));
@@ -448,7 +448,7 @@
       const info = node("div", "row-info");
       info.append(node("strong", "", item.title));
       const activity = item.activity || { kind: "Edited", time: item.content_updated_at };
-      info.append(node("span", "artifact-activity", `${activity.kind} ${formatDate(activity.time)}`));
+      info.append(node("span", "artifact-activity", `${activity.kind} ${formatDateTime(activity.time)}`));
       row.append(info);
       row.append(node("span", "row-meta", `v${item.current_version_sequence || 1}`));
       row.append(node("span", "row-pin", item.pinned ? "★" : ""));
@@ -956,13 +956,11 @@
 
   function bindEvents() {
     $("new-artifact").addEventListener("click", openCreateDialog);
-    let searchTimer = null;
     $("catalog-search").addEventListener("input", (event) => {
       state.catalog.query = event.target.value.trim();
       state.catalog.nextCursor = null;
       persistCatalogState();
-      clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => loadCatalog(), 180);
+      loadCatalog();
     });
     document.querySelectorAll(".scope-tab").forEach((tab) => tab.addEventListener("click", () => {
       if (tab.classList.contains("identity-disabled")) return;

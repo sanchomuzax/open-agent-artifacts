@@ -70,6 +70,7 @@ kbd { border: 1px solid var(--line); border-radius: .25rem; padding: .08rem .3re
 .artifact-grid { display: grid; gap: 1rem; }
 .artifact-grid.grid-view { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .artifact-grid.grid-view, .group-grid { align-items: stretch; }
+.artifact-grid.grid-view > .catalog-group { grid-column: 1 / -1; }
 .artifact-grid.list-view { display: block; }
 .catalog-group { margin: 1.9rem 0 2.3rem; }
 .group-heading { margin: 0 0 .8rem; color: var(--muted); font-size: .75rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
