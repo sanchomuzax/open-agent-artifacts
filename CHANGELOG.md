@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5 — 2026-09-16
+
+- Harden HTTP request boundaries, HTML sandboxing, and canonical project-description synchronization.
+- Make legacy migration atomic and catalog pagination stable under edits, archival, and pin changes.
+- Bound catalog previews, prevent stale search responses, and preserve exact Unicode selection anchors.
+- Make release detection range-aware and idempotent when a version tag already exists.
+
 ## 0.2.4 — 2026-09-16
 
 - Allow the complete rendered artifact to flow with the page instead of clipping at a fixed frame height.
