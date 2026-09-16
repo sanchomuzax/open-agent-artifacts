@@ -53,7 +53,7 @@ def running_server(tmp_path: Path):
 @pytest.fixture
 def page(browser: Browser, running_server) -> Page:
     context = browser.new_context(viewport={"width": 1280, "height": 900})
-    context.add_init_script("localStorage.removeItem('oaa_view_mode'); sessionStorage.clear();")
+    context.add_init_script("if (window.top === window) { localStorage.removeItem('oaa_view_mode'); sessionStorage.clear(); }")
     current = context.new_page()
     current.base_url = f"http://127.0.0.1:{running_server.server_port}"
     yield current

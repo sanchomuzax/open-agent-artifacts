@@ -130,7 +130,7 @@ kbd { border: 1px solid var(--line); border-radius: .25rem; padding: .08rem .3re
 .artifact-main, .comments-panel { min-width: 0; border: 1px solid var(--line); border-radius: .8rem; background: rgba(16, 24, 32, .9); box-shadow: 0 .9rem 2.5rem #0003; }
 .presentation-toolbar, .comments-heading, .editor-heading { display: flex; align-items: center; justify-content: space-between; gap: .7rem; padding: .85rem 1rem; border-bottom: 1px solid var(--line); }
 .presentation-title { color: var(--muted); font-size: .75rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
-.presentation-panel { min-height: 28rem; overflow: auto; padding: clamp(1rem, 3vw, 2.1rem); background: #0c1319; }
+.presentation-panel { min-height: 28rem; overflow: visible; padding: clamp(1rem, 3vw, 2.1rem); background: #0c1319; }
 .rendered-markdown { max-width: 50rem; margin: 0 auto; color: #e2eceb; font-size: 1rem; line-height: 1.7; }
 .rendered-markdown h1, .rendered-markdown h2, .rendered-markdown h3, .rendered-markdown h4 { margin: 1.2rem 0 .55rem; color: var(--accent-2); line-height: 1.2; }
 .rendered-markdown h1 { font-size: 2rem; }
@@ -143,7 +143,7 @@ kbd { border: 1px solid var(--line); border-radius: .25rem; padding: .08rem .3re
 .rendered-markdown a { color: var(--accent); }
 .inline-code { border-radius: .25rem; padding: .1rem .25rem; color: var(--accent-2); background: #ffffff0c; }
 .presentation-label { margin: 0 0 .6rem; color: var(--yellow); font-size: .76rem; font-weight: 750; }
-.html-frame { min-height: 27rem; border: 1px solid var(--line); border-radius: .45rem; }
+.html-frame { display: block; width: 100%; height: 22.5rem; min-height: 20rem; overflow: hidden; border: 0; background: #101820; }
 .markdown-code { overflow: auto; border-radius: .5rem; padding: .75rem; color: #c9e5df; background: #080d12; font: .8rem/1.5 ui-monospace, monospace; white-space: pre-wrap; }
 .highlighted-quote { border-radius: .22rem; padding: .08rem .12rem; color: #1b1607; background: var(--yellow); box-shadow: 0 0 0 2px #f3ce7433; cursor: pointer; }
 .source-fallback .highlighted-quote { color: #1b1607; }

@@ -219,9 +219,9 @@
     });
     const body = documentCopy.body ? documentCopy.body.innerHTML : "";
     const nonce = "oaa-bridge-v1";
-    const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-oaa-bridge-v1'; base-uri 'none'; form-action 'none'";
-    const bridge = `<script nonce="${nonce}">(function(){document.addEventListener('mouseup',function(){var s=getSelection();if(!s||s.isCollapsed||!s.toString())return;parent.postMessage({type:'oaa-selection',schema:1,nonce:'${nonce}',version_id:${JSON.stringify(versionId)},exact:s.toString()},'*');});})();<\/script>`;
-    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font:16px/1.6 system-ui,sans-serif;margin:1.4rem;color:#edf5f6;background:#101820}img{max-width:100%;height:auto}a{color:#8bdaca}</style></head><body>${body}${bridge}</body></html>`;
+    const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'none'";
+    const bridge = `<script src="/sandbox-bridge.js" nonce="${nonce}" data-nonce="${nonce}" data-version-id="${String(versionId)}"></script>`;
+    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{overflow:hidden}body{font:16px/1.6 system-ui,sans-serif;margin:1.4rem;color:#edf5f6;background:#101820}img{max-width:100%;height:auto}a{color:#8bdaca}</style></head><body>${body}${bridge}</body></html>`;
   }
 
   function highlightExact(parent, exact, commentId) {
@@ -276,6 +276,9 @@
       frame.className = "html-frame";
       frame.title = state.artifact ? `${state.artifact.title} rendered HTML` : "Rendered HTML artifact";
       frame.setAttribute("sandbox", "allow-scripts");
+      frame.setAttribute("scrolling", "no");
+      frame.setAttribute("height", "360");
+      frame.dataset.versionId = presentation.version_id;
       frame.referrerPolicy = "no-referrer";
       frame.srcdoc = sanitizeHtmlForSandbox(presentation.content, presentation.version_id);
       frame.addEventListener("load", () => {
@@ -880,11 +883,17 @@
     $("workspace").append(drawer);
   }
 
-  function handleSandboxSelection(event) {
+  function handleSandboxMessage(event) {
     const data = event.data;
-    const frame = $("presentation")?.querySelector("iframe");
-    if (!frame || event.source !== frame.contentWindow || !data || data.type !== "oaa-selection" || data.schema !== 1 || data.nonce !== "oaa-bridge-v1") return;
-    if (!state.version || data.version_id !== state.version.id || typeof data.exact !== "string" || !data.exact.trim()) return;
+    const frame = $("presentation")?.querySelector("iframe.html-frame");
+    if (!frame || event.source !== frame.contentWindow || !data || data.schema !== 1 || data.nonce !== "oaa-bridge-v1") return;
+    if (!state.version || data.version_id !== state.version.id) return;
+    if (data.type === "oaa-resize") {
+      const height = Number(data.height);
+      if (Number.isFinite(height) && height > 0) frame.setAttribute("height", String(Math.max(320, Math.min(20000, Math.ceil(height + 8)))));
+      return;
+    }
+    if (data.type !== "oaa-selection" || typeof data.exact !== "string" || !data.exact.trim()) return;
     const rect = frame.getBoundingClientRect();
     captureSelection(null, data.exact, { left: rect.left + 16, bottom: rect.top + 70 });
   }
@@ -925,7 +934,7 @@
       if (!exact) return;
       captureSelection(selection.getRangeAt(0), exact, selection.getRangeAt(0).getBoundingClientRect());
     });
-    window.addEventListener("message", handleSandboxSelection);
+    window.addEventListener("message", handleSandboxMessage);
     window.addEventListener("popstate", route);
     window.addEventListener("hashchange", route);
     window.addEventListener("keydown", (event) => {

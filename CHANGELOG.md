@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 — 2026-09-16
+
+- Make rendered HTML part of the artifact page by disabling inner scrolling and sizing the isolated frame to document content.
+- Move the trusted sandbox resize/selection bridge to a same-origin asset while keeping artifact scripts disabled and same-origin access denied.
+
 ## 0.2.1 — 2026-09-16
 
 - Ensure HTML preview iframes do not intercept catalog-card activation.
