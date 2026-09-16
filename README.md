@@ -14,6 +14,23 @@ Open Agent Artifacts is a local-first review workspace for deliverables produced
 
 The live workspace—not a repository HTML file—is the primary destination for artifact requests. GitHub contains the source code and documentation.
 
+## Using it with an AI agent
+
+Open Agent Artifacts is a review workspace, not a model and not an autonomous coding agent. An agent publishes a document or other deliverable here; a person opens the stable artifact link, reviews the immutable version, and leaves feedback on a selected passage. The agent then reads that feedback, prepares a new version, and publishes it without overwriting the old one.
+
+The shortest agent workflow is:
+
+1. Make sure the Artifacts service is running and set `OAA_URL` to its private URL.
+2. Create an artifact with `artifactctl create`.
+3. Return the verified artifact ID/link to the user.
+4. When asked to address feedback, fetch the current artifact and its open comments.
+5. Publish a new version with `artifactctl publish`, passing the current version ID.
+6. Read the new version back before saying the feedback was addressed.
+
+The repository includes the complete command examples in [`docs/agent-integration.md`](docs/agent-integration.md). The `integrations/hermes/SKILL.md` file is the Hermes-specific operational skill; `AGENTS.md` is only the public contributor guide and is not the artifact runtime configuration.
+
+Comments are stored feedback, not automatic commands. The service does not push comments to an agent by itself. An agent sees them when it is explicitly asked to process feedback or when a separately configured polling/webhook integration fetches them. A comment alone must never authorize unrelated or destructive actions.
+
 ## Status
 
 Early development. The first release targets static content, immutable versions, anchored comments, a local API, rendered Markdown, and sandboxed HTML presentation. Arbitrary artifact JavaScript execution is intentionally out of scope.
