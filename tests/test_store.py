@@ -1,5 +1,6 @@
 import hashlib
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -114,6 +115,51 @@ def test_project_description_is_a_pinned_immutable_artifact(tmp_path):
     assert updated["id"] == first["id"]
     assert store.get_current_version(first["id"])["content"] == "<html>v2</html>"
     assert len(store.list_versions(first["id"])) == 2
+
+
+def test_project_description_rollback_and_rename_keep_stable_identity(tmp_path):
+    store = make_store(tmp_path)
+    title = "Open Agent Artifacts — Project description"
+    artifact = store.ensure_project_description(title, "A")
+    store.ensure_project_description(title, "B")
+    store.ensure_project_description(title, "C")
+    store.rename_artifact(artifact["id"], "Renamed system description")
+
+    rolled_back = store.ensure_project_description(title, "B")
+
+    assert rolled_back["id"] == artifact["id"]
+    assert rolled_back["title"] == "Renamed system description"
+    assert store.get_current_version(artifact["id"])["content"] == "B"
+    assert len(store.list_versions(artifact["id"])) == 4
+
+
+def test_project_description_does_not_adopt_same_titled_user_artifact(tmp_path):
+    store = make_store(tmp_path)
+    title = "Open Agent Artifacts — Project description"
+    user_artifact = store.create_artifact(title, "html", "user content", "user")
+
+    system_artifact = store.ensure_project_description(title, "system content")
+
+    assert system_artifact["id"] != user_artifact["id"]
+    assert store.get_current_version(user_artifact["id"])["content"] == "user content"
+
+
+def test_project_description_sync_is_atomic_and_keeps_single_identity(tmp_path):
+    store = make_store(tmp_path)
+    title = "Open Agent Artifacts — Project description"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: store.ensure_project_description(title, "content"), range(8)))
+    assert len({item["id"] for item in results}) == 1
+    assert len(store.list_artifacts(include_archived=True)) == 1
+
+
+def test_project_description_is_repinned_on_sync(tmp_path):
+    store = make_store(tmp_path)
+    title = "Open Agent Artifacts — Project description"
+    artifact = store.ensure_project_description(title, "content")
+    store.set_pinned(artifact["id"], False)
+    synced = store.ensure_project_description(title, "content")
+    assert synced["pinned"] is True
 
 
 def test_comments_are_bound_to_version_and_events_are_audited(tmp_path):

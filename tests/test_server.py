@@ -8,9 +8,9 @@ import pytest
 from open_agent_artifacts.server import create_server
 
 
-def request(server, method, path, payload=None, token=None):
-    body = None if payload is None else json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+def request(server, method, path, payload=None, token=None, headers=None, raw_body=None):
+    body = raw_body if raw_body is not None else (None if payload is None else json.dumps(payload).encode("utf-8"))
+    headers = {"Content-Type": "application/json", **(headers or {})}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     request_obj = urllib.request.Request(
@@ -162,3 +162,52 @@ def test_static_catalog_shell_is_served_without_external_scripts(running_server)
     assert 'id="comments-toggle"' in html
     assert "highlighted-quote" in html
     assert "https://" not in html
+
+
+def test_post_rejects_non_json_content_type(running_server):
+    status, error = request(
+        running_server,
+        "POST",
+        "/api/artifacts",
+        raw_body=b'{}',
+        headers={"Content-Type": "text/plain"},
+    )
+    assert status == 415
+    assert error["error"] == "unsupported_media_type"
+
+
+def test_post_rejects_foreign_origin(running_server):
+    status, error = request(
+        running_server,
+        "POST",
+        "/api/artifacts",
+        {"title": "Cross-site", "kind": "text", "content": "x"},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert status == 403
+    assert error["error"] == "cross_origin_request"
+
+
+@pytest.mark.parametrize("origin", ["http://127.0.0.1:9", "https://127.0.0.1"])
+def test_post_rejects_origin_with_different_port_or_scheme(running_server, origin):
+    status, error = request(
+        running_server,
+        "POST",
+        "/api/artifacts",
+        {"title": "Cross-site", "kind": "text", "content": "x"},
+        headers={"Origin": origin},
+    )
+    assert status == 403
+    assert error["error"] == "cross_origin_request"
+
+
+def test_bracketed_ipv6_host_is_accepted(running_server):
+    status, health = request(running_server, "GET", "/healthz", headers={"Host": f"[::1]:{running_server.server_port}"})
+    assert status == 200
+    assert health["status"] == "ok"
+
+
+def test_non_integer_catalog_limit_returns_json_400(running_server):
+    status, error = request(running_server, "GET", "/api/artifacts?scope=all&limit=abc")
+    assert status == 400
+    assert error["error"] == "invalid_request"

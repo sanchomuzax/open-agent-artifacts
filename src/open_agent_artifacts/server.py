@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import mimetypes
 import os
@@ -30,11 +31,12 @@ class ArtifactHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, server_address, handler_class, store: Store, api_token: str | None, static_dir: Path):
+    def __init__(self, server_address, handler_class, store: Store, api_token: str | None, static_dir: Path, allowed_hosts: set[str]):
         super().__init__(server_address, handler_class)
         self.store = store
         self.api_token = api_token
         self.static_dir = static_dir.resolve()
+        self.allowed_hosts = allowed_hosts
 
 
 def _json_bytes(payload: Any) -> bytes:
@@ -97,7 +99,8 @@ def _handler_for(store: Store, api_token: str | None):
             if expected is None:
                 return True
             authorization = self.headers.get("Authorization", "")
-            if authorization == f"Bearer {expected}":
+            supplied = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else ""
+            if supplied and hmac.compare_digest(supplied, expected):
                 return True
             self.send_response(HTTPStatus.UNAUTHORIZED)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -107,6 +110,38 @@ def _handler_for(store: Store, api_token: str | None):
             self.end_headers()
             self.wfile.write(body)
             return False
+
+        def _request_boundary_ok(self, state_changing: bool = False) -> bool:
+            authority = self.headers.get("Host", "")
+            try:
+                request_url = urlsplit(f"//{authority}")
+                host = (request_url.hostname or "").rstrip(".").lower()
+                request_port = request_url.port or self.server.server_port
+            except ValueError:
+                host = ""
+                request_port = -1
+            if host not in self.server.allowed_hosts:
+                self._error(HTTPStatus.MISDIRECTED_REQUEST, "invalid_host", "request host is not allowed")
+                return False
+            if state_changing:
+                if self.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+                    self._error(HTTPStatus.FORBIDDEN, "cross_origin_request", "cross-site request rejected")
+                    return False
+                origin = self.headers.get("Origin")
+                if origin:
+                    try:
+                        parsed = urlsplit(origin)
+                        origin_host = (parsed.hostname or "").rstrip(".").lower()
+                        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    except ValueError:
+                        parsed = urlsplit("")
+                        origin_host = ""
+                        origin_port = -1
+                    expected_port = request_port or 80
+                    if (parsed.scheme, origin_host, origin_port) != ("http", host, expected_port):
+                        self._error(HTTPStatus.FORBIDDEN, "cross_origin_request", "foreign origin rejected")
+                        return False
+            return True
 
         def _read_json(self) -> dict[str, Any] | None:
             raw_length = self.headers.get("Content-Length")
@@ -144,6 +179,8 @@ def _handler_for(store: Store, api_token: str | None):
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "storage_error", "storage operation failed")
 
         def do_GET(self) -> None:
+            if not self._request_boundary_ok():
+                return
             parsed = urlsplit(self.path)
             path = parsed.path
             if path == "/healthz":
@@ -180,7 +217,11 @@ def _handler_for(store: Store, api_token: str | None):
                 elif segments == ["api", "artifacts"] and any(key in params for key in ("scope", "limit", "cursor", "view")):
                     query = params.get("q", params.get("query", [None]))[0]
                     scope = params.get("scope", ["all"])[0]
-                    limit = int(params.get("limit", ["50"])[0])
+                    try:
+                        limit = int(params.get("limit", ["50"])[0])
+                    except ValueError:
+                        self._error(HTTPStatus.BAD_REQUEST, "invalid_request", "limit must be an integer")
+                        return
                     cursor = params.get("cursor", [None])[0]
                     self._send_json(HTTPStatus.OK, self.server.store.list_catalog(
                         scope=scope, query=query, limit=limit, cursor=cursor,
@@ -217,7 +258,12 @@ def _handler_for(store: Store, api_token: str | None):
                 self._handle_store_error(error)
 
         def do_POST(self) -> None:
+            if not self._request_boundary_ok(True):
+                return
             if not self._authorized():
+                return
+            if self.headers.get_content_type() != "application/json":
+                self._error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type", "Content-Type must be application/json")
                 return
             path = urlsplit(self.path).path
             segments = self._segments(path)
@@ -285,12 +331,14 @@ def create_server(
     port: int = 0,
     api_token: str | None = None,
     static_dir: str | Path | None = None,
+    allowed_hosts: list[str] | None = None,
 ) -> ArtifactHTTPServer:
     store = Store(db_path)
     if static_dir is None:
         working_directory_web = Path.cwd() / "web"
         static_dir = working_directory_web if working_directory_web.is_dir() else Path(__file__).resolve().parents[2] / "web"
-    return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir))
+    normalized_hosts = {item.lower() for item in (allowed_hosts or [host, "127.0.0.1", "localhost", "::1"])}
+    return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir), normalized_hosts)
 
 
 def sync_project_description(store: Store, static_dir: str | Path) -> dict[str, Any] | None:

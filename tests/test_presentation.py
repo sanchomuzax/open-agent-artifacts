@@ -8,19 +8,20 @@ def test_markdown_presentation_is_rendered_mode():
     assert result["source_available"] is True
 
 
-def test_html_presentation_has_sanitized_isolated_source():
+def test_html_presentation_returns_only_client_consumed_fields():
     result = make_presentation(
         "html",
         '<h1>Hello</h1><script>window.bad=true</script><img src="https://example.test/x.png" onerror="bad()">',
         "v1",
     )
     assert result["mode"] == "isolated-html"
-    assert "sandbox" in result["sandbox"]
-    assert "allow-same-origin" not in result["sandbox"]
-    assert "sandbox_srcdoc" in result
-    assert "window.bad" not in result["sandbox_srcdoc"]
-    assert "onerror" not in result["sandbox_srcdoc"]
-    assert "https://example.test" not in result["sandbox_srcdoc"]
+    assert result == {
+        "mode": "isolated-html",
+        "kind": "html",
+        "version_id": "v1",
+        "content": '<h1>Hello</h1><script>window.bad=true</script><img src="https://example.test/x.png" onerror="bad()">',
+        "source_available": True,
+    }
 
 
 def test_unsupported_kinds_keep_source_fallback():

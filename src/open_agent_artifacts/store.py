@@ -128,6 +128,10 @@ class Store:
                     created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
                     PRIMARY KEY(scope, key)
                 );
+                CREATE TABLE IF NOT EXISTS system_artifacts (
+                    system_key TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL UNIQUE REFERENCES artifacts(id)
+                );
                 INSERT OR IGNORE INTO schema_migrations(version) VALUES ('001_initial');
                 """
             )
@@ -532,34 +536,76 @@ class Store:
         """Create or publish the canonical project-description artifact."""
         title = _check_text(title, "title", 512)
         content = _check_text(content, "content", MAX_CONTENT_BYTES)
-        existing = next(
-            (item for item in self.list_artifacts(include_archived=True) if item["title"] == title),
-            None,
-        )
-        if existing is None:
-            artifact = self.create_artifact(
-                title,
-                "html",
-                content,
-                created_by,
-                idempotency_key="system:project-description",
-            )
-            return self.set_pinned(artifact["id"], True)
-
-        artifact_id = existing["id"]
-        current = self.get_current_version(artifact_id)
+        system_key = "project-description"
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        if current["content_hash"] != content_hash:
-            self.publish_version(
-                artifact_id,
-                content,
-                created_by,
-                expected_current_version_id=current["id"],
-                change_summary="Sync project description",
-                idempotency_key=f"system:project-description:{content_hash}",
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT artifact_id FROM system_artifacts WHERE system_key = ?", (system_key,)
+            ).fetchone()
+            artifact_id = row["artifact_id"] if row is not None else None
+            if artifact_id is None:
+                legacy = connection.execute(
+                    """SELECT i.result_id
+                         FROM idempotency_keys i
+                         JOIN artifacts a ON a.id = i.result_id
+                        WHERE i.scope = 'create'
+                          AND i.key = 'system:project-description'
+                          AND a.kind = 'html'"""
+                ).fetchone()
+                artifact_id = legacy["result_id"] if legacy is not None else None
+            if artifact_id is None:
+                artifact_id = str(uuid.uuid4())
+                version_id = str(uuid.uuid4())
+                connection.execute(
+                    "INSERT INTO artifacts(id, slug, title, kind, current_version_id) VALUES (?, ?, ?, 'html', ?)",
+                    (artifact_id, self._slug(title, artifact_id), title, version_id),
+                )
+                connection.execute(
+                    """INSERT INTO versions
+                       (id, artifact_id, sequence, content, content_hash, created_by)
+                       VALUES (?, ?, 1, ?, ?, ?)""",
+                    (version_id, artifact_id, content, content_hash, created_by),
+                )
+                connection.execute(
+                    f"""UPDATE artifacts
+                           SET owner_principal_id = ?, content_updated_at = {_now_sql()}
+                         WHERE id = ?""",
+                    (DEFAULT_PRINCIPAL_ID, artifact_id),
+                )
+            connection.execute(
+                "INSERT OR IGNORE INTO system_artifacts(system_key, artifact_id) VALUES (?, ?)",
+                (system_key, artifact_id),
             )
-        artifact = self.get_artifact(artifact_id)
-        return artifact if artifact["pinned"] else self.set_pinned(artifact_id, True)
+            artifact = self._get_artifact_row(connection, artifact_id)
+            current = self._get_version_row(connection, artifact["current_version_id"])
+            if current["content_hash"] != content_hash:
+                version_id = str(uuid.uuid4())
+                sequence = connection.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM versions WHERE artifact_id = ?",
+                    (artifact_id,),
+                ).fetchone()[0]
+                connection.execute(
+                    """INSERT INTO versions
+                       (id, artifact_id, sequence, parent_version_id, content, content_hash, change_summary, created_by)
+                       VALUES (?, ?, ?, ?, ?, ?, 'Sync project description', ?)""",
+                    (version_id, artifact_id, sequence, current["id"], content, content_hash, created_by),
+                )
+                connection.execute(
+                    f"""UPDATE artifacts
+                           SET current_version_id = ?, updated_at = {_now_sql()}, content_updated_at = {_now_sql()}
+                         WHERE id = ?""",
+                    (version_id, artifact_id),
+                )
+            pinned_at = connection.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0]
+            connection.execute("UPDATE artifacts SET pinned_at = ? WHERE id = ?", (pinned_at, artifact_id))
+            connection.execute(
+                """INSERT INTO artifact_preferences(principal_id, artifact_id, pinned_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(principal_id, artifact_id) DO UPDATE SET pinned_at = excluded.pinned_at""",
+                (DEFAULT_PRINCIPAL_ID, artifact_id, pinned_at),
+            )
+            return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
 
     def get_version(self, version_id: str) -> dict[str, Any]:
         with self._connect() as connection:
