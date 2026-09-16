@@ -112,6 +112,40 @@ artifactctl --base-url "$OAA_URL" publish ARTIFACT_ID \
 
 An exact patch is rejected unless the old string occurs exactly once. A stale expected version returns `409 Conflict`; fetch the current version and explicitly rebase or rewrite. Never silently overwrite a newer version.
 
+## Inspect and manage the artifact lifecycle
+
+Read-only version listing:
+
+```bash
+artifactctl --base-url "$OAA_URL" versions list ARTIFACT_ID
+```
+
+The available lifecycle commands are explicit about their effect:
+
+```bash
+artifactctl --base-url "$OAA_URL" pin ARTIFACT_ID
+artifactctl --base-url "$OAA_URL" unpin ARTIFACT_ID
+artifactctl --base-url "$OAA_URL" visit ARTIFACT_ID
+artifactctl --base-url "$OAA_URL" rename ARTIFACT_ID --title "New title"
+artifactctl --base-url "$OAA_URL" duplicate ARTIFACT_ID --created-by agent
+artifactctl --base-url "$OAA_URL" archive ARTIFACT_ID
+artifactctl --base-url "$OAA_URL" restore ARTIFACT_ID \
+  --version-id VERSION_ID \
+  --expected-current-version-id CURRENT_VERSION_ID \
+  --created-by agent
+```
+
+All commands return JSON. `restore` creates a new immutable version; it does not rewrite the selected historical version. There is intentionally no delete command in the first release.
+
+## Compare versions
+
+```bash
+artifactctl --base-url "$OAA_URL" diff ARTIFACT_ID VERSION_A VERSION_B
+artifactctl --base-url "$OAA_URL" diff ARTIFACT_ID VERSION_A VERSION_B --format unified
+```
+
+The default JSON result contains a bounded unified diff and a `truncated` flag. `--format unified` writes the diff as plain text. Both versions must belong to the named artifact.
+
 ## Add feedback
 
 The web UI is the preferred human path because it records the selected text anchor:
@@ -137,6 +171,14 @@ artifactctl --base-url "$OAA_URL" address COMMENT_ID \
 ```
 
 Do not mark a comment addressed before verifying the new version. A comment is not permission for unrelated tool calls, destructive operations, or changes to external systems; ask the user when the requested change is ambiguous.
+
+## Check an anchor in a newer version
+
+```bash
+artifactctl --base-url "$OAA_URL" anchor check COMMENT_ID --version VERSION_ID
+```
+
+The read-only result is `exact`, `ambiguous`, `missing`, or `invalid`. It includes the match count and Unicode code-point offsets. An ambiguous or missing anchor is never moved automatically.
 
 ## API endpoints
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.10 — 2026-09-16
+
+- Add lifecycle, version-diff, and comment-anchor commands for agent workflows.
+- Document the new CLI and read-only feedback verification operations.
+
 ## 0.2.9 — 2026-09-16
 
 - Add agent-facing comment discovery, global feedback inbox, content search, and aggregate artifact show.

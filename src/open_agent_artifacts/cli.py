@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import sys
@@ -13,6 +14,10 @@ from urllib.request import Request, urlopen
 
 class CLIError(Exception):
     """A user-facing CLI error."""
+
+
+class RawOutput(str):
+    """CLI output that should not be JSON-encoded."""
 
 
 def _read_content(content: str | None, file_path: str | None) -> str | None:
@@ -57,6 +62,71 @@ def _add_content_options(parser: argparse.ArgumentParser, required: bool = False
     group = parser.add_mutually_exclusive_group(required=required)
     group.add_argument("--content")
     group.add_argument("--file")
+
+
+def _check_anchor(anchor: Any, content: str, comment_id: str, source_version_id: str, target_version_id: str) -> dict[str, Any]:
+    if not isinstance(anchor, dict):
+        return {
+            "status": "invalid",
+            "comment_id": comment_id,
+            "source_version_id": source_version_id,
+            "target_version_id": target_version_id,
+            "match_count": 0,
+            "matches": [],
+        }
+    quote = anchor.get("quote") if isinstance(anchor.get("quote"), dict) else {}
+    exact = quote.get("exact") or anchor.get("exact")
+    prefix = quote.get("prefix", anchor.get("prefix", ""))
+    suffix = quote.get("suffix", anchor.get("suffix", ""))
+    if not isinstance(exact, str) or not exact or not isinstance(prefix, str) or not isinstance(suffix, str):
+        return {
+            "status": "invalid",
+            "comment_id": comment_id,
+            "source_version_id": source_version_id,
+            "target_version_id": target_version_id,
+            "match_count": 0,
+            "matches": [],
+        }
+    if anchor.get("schema") == 2 and (
+        anchor.get("type") != "text-range"
+        or anchor.get("coordinate_space") != "unicode-code-points"
+        or not isinstance(anchor.get("start"), int)
+        or not isinstance(anchor.get("end"), int)
+        or anchor["start"] < 0
+        or anchor["end"] < anchor["start"]
+    ):
+        return {
+            "status": "invalid",
+            "comment_id": comment_id,
+            "source_version_id": source_version_id,
+            "target_version_id": target_version_id,
+            "match_count": 0,
+            "matches": [],
+        }
+    candidates = []
+    offset = 0
+    while True:
+        start = content.find(exact, offset)
+        if start < 0:
+            break
+        candidates.append(start)
+        offset = start + max(1, len(exact))
+    matches = []
+    for start in candidates:
+        end = start + len(exact)
+        prefix_ok = not prefix or content[max(0, start - len(prefix)):start] == prefix
+        suffix_ok = not suffix or content[end:end + len(suffix)] == suffix
+        if prefix_ok and suffix_ok:
+            matches.append({"start": start, "end": end, "exact": exact})
+    status = "exact" if len(matches) == 1 else "ambiguous" if len(matches) > 1 else "missing"
+    return {
+        "status": status,
+        "comment_id": comment_id,
+        "source_version_id": source_version_id,
+        "target_version_id": target_version_id,
+        "match_count": len(matches),
+        "matches": matches,
+    }
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -126,6 +196,40 @@ def _build_parser() -> argparse.ArgumentParser:
     search.add_argument("--comment-status", choices=["open", "addressed", "resolved"])
     search.add_argument("--limit", type=int, default=50)
     search.add_argument("--cursor")
+    diff = subparsers.add_parser("diff", help="compare two immutable versions")
+    diff.add_argument("artifact_id")
+    diff.add_argument("version_a")
+    diff.add_argument("version_b")
+    diff.add_argument("--format", choices=["json", "unified"], default="json")
+    diff.add_argument("--max-output", type=int, default=200_000)
+    anchor = subparsers.add_parser("anchor", help="validate a comment anchor")
+    anchor_subparsers = anchor.add_subparsers(dest="anchor_command", required=True)
+    anchor_check = anchor_subparsers.add_parser("check", help="check an anchor in a version")
+    anchor_check.add_argument("comment_id")
+    anchor_check.add_argument("--version", required=True)
+    versions = subparsers.add_parser("versions", help="inspect artifact versions")
+    versions_subparsers = versions.add_subparsers(dest="versions_command", required=True)
+    versions_list = versions_subparsers.add_parser("list", help="list artifact versions")
+    versions_list.add_argument("artifact_id")
+    archive = subparsers.add_parser("archive", help="archive an artifact")
+    archive.add_argument("artifact_id")
+    rename = subparsers.add_parser("rename", help="rename an artifact")
+    rename.add_argument("artifact_id")
+    rename.add_argument("--title", required=True)
+    duplicate = subparsers.add_parser("duplicate", help="duplicate an artifact")
+    duplicate.add_argument("artifact_id")
+    duplicate.add_argument("--created-by", default="artifactctl")
+    restore = subparsers.add_parser("restore", help="restore a version as a new version")
+    restore.add_argument("artifact_id")
+    restore.add_argument("--version-id", required=True)
+    restore.add_argument("--expected-current-version-id", required=True)
+    restore.add_argument("--created-by", default="artifactctl")
+    pin = subparsers.add_parser("pin", help="pin an artifact")
+    pin.add_argument("artifact_id")
+    unpin = subparsers.add_parser("unpin", help="unpin an artifact")
+    unpin.add_argument("artifact_id")
+    visit = subparsers.add_parser("visit", help="record an artifact visit")
+    visit.add_argument("artifact_id")
     return parser
 
 
@@ -184,6 +288,76 @@ def _run(args: argparse.Namespace) -> Any:
         if args.cursor:
             params["cursor"] = args.cursor
         return _request(args.base_url, "GET", "/api/search?" + urlencode(params), token=args.token)[1]
+    if args.command == "versions":
+        return _request(
+            args.base_url,
+            "GET",
+            f"/api/artifacts/{quote(args.artifact_id, safe='')}/versions",
+            token=args.token,
+        )[1]
+    if args.command == "diff":
+        artifact = _request(args.base_url, "GET", f"/api/artifacts/{quote(args.artifact_id, safe='')}", token=args.token)[1]
+        version_a = _request(args.base_url, "GET", f"/api/versions/{quote(args.version_a, safe='')}", token=args.token)[1]
+        version_b = _request(args.base_url, "GET", f"/api/versions/{quote(args.version_b, safe='')}", token=args.token)[1]
+        if version_a.get("artifact_id") != artifact["id"] or version_b.get("artifact_id") != artifact["id"]:
+            raise CLIError("versions belong to a different artifact")
+        if args.max_output < 1:
+            raise CLIError("max-output must be positive")
+        diff_text = "".join(difflib.unified_diff(
+            version_a["content"].splitlines(keepends=True),
+            version_b["content"].splitlines(keepends=True),
+            fromfile=f"{args.artifact_id}:{args.version_a}",
+            tofile=f"{args.artifact_id}:{args.version_b}",
+        ))
+        truncated = len(diff_text) > args.max_output
+        if truncated:
+            diff_text = diff_text[:args.max_output] + "\n[diff truncated]\n"
+        if args.format == "unified":
+            return RawOutput(diff_text)
+        return {"format": "unified", "diff": diff_text, "truncated": truncated}
+    if args.command == "anchor" and args.anchor_command == "check":
+        comment = _request(args.base_url, "GET", f"/api/comments/{quote(args.comment_id, safe='')}", token=args.token)[1]
+        version = _request(args.base_url, "GET", f"/api/versions/{quote(args.version, safe='')}", token=args.token)[1]
+        if version.get("artifact_id") != comment.get("artifact_id"):
+            raise CLIError("target version belongs to a different artifact")
+        return _check_anchor(comment.get("anchor"), version["content"], comment["id"], comment["version_id"], version["id"])
+    if args.command in {"archive", "pin", "unpin", "visit"}:
+        suffix = args.command
+        return _request(
+            args.base_url,
+            "POST",
+            f"/api/artifacts/{quote(args.artifact_id, safe='')}/{suffix}",
+            {},
+            args.token,
+        )[1]
+    if args.command == "rename":
+        return _request(
+            args.base_url,
+            "POST",
+            f"/api/artifacts/{quote(args.artifact_id, safe='')}/rename",
+            {"title": args.title},
+            args.token,
+        )[1]
+    if args.command == "duplicate":
+        return _request(
+            args.base_url,
+            "POST",
+            f"/api/artifacts/{quote(args.artifact_id, safe='')}/duplicate",
+            {"created_by": args.created_by},
+            args.token,
+        )[1]
+    if args.command == "restore":
+        return _request(
+            args.base_url,
+            "POST",
+            f"/api/artifacts/{quote(args.artifact_id, safe='')}/restore",
+            {
+                "version_id": args.version_id,
+                "expected_current_version_id": args.expected_current_version_id,
+                "created_by": args.created_by,
+            },
+            args.token,
+        )[1]
     if args.command == "create":
         content = _read_content(args.content, args.file)
         _, result = _request(
@@ -261,7 +435,11 @@ def _run(args: argparse.Namespace) -> Any:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        print(json.dumps(_run(args), ensure_ascii=False, indent=2))
+        result = _run(args)
+        if isinstance(result, RawOutput):
+            print(result, end="")
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
     except CLIError as error:
         print(json.dumps({"error": "cli_error", "message": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
