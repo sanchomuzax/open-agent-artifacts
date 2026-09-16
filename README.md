@@ -2,6 +2,8 @@
 
 A private-by-default artifact workspace for AI agents.
 
+![Open Agent Artifacts workflow](docs/assets/open-agent-artifacts-flow.svg)
+
 The project provides a versioned catalog for agent-produced documents, code, diagrams, and other reviewable artifacts. Users can open a stable link, browse a grid or grouped list, select a passage, leave feedback, compare versions, and ask an agent to prepare a new version.
 
 The workspace opens on a catalog with visual previews. Markdown opens as a real rendered document; HTML opens as a sandboxed visual document. An opened artifact supports immutable version publishing, pin/unpin, visible or hidden comments, highlighted comment anchors, history, and restore-as-new-version.
