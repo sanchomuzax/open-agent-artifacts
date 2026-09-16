@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-agent-artifacts"
-version = "0.1.10"
+version = "0.2.0"
 description = "A private-by-default artifact workspace for AI agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ authors = [{ name = "Open Agent Artifacts contributors" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "playwright>=1.50"]
 
 [project.scripts]
 oaa-server = "open_agent_artifacts.server:main"
@@ -23,6 +23,7 @@ artifactctl = "open_agent_artifacts.cli:main"
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = ["e2e: browser acceptance tests requiring a Playwright browser"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

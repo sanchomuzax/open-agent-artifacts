@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 — 2026-09-15
+
+- Replace the split review shell with a full-width artifact catalog and separate artifact workspace.
+- Add grid/list catalog browsing, scope tabs, search, grouped pinned items, visual previews, and stateful Home/Back navigation.
+- Render Markdown as a real document and display HTML visually inside an opaque-origin sandbox without executing artifact scripts.
+- Add inline selection comments, persistent highlights, comment visibility controls, version history, immutable restore, rename, and duplicate APIs.
+- Add principal/preferences groundwork, snapshot cursors, legacy database migration coverage, and Playwright reference UX acceptance.
+
 ## 0.1.10 — 2026-09-15
 
 - Make the project description a canonical pinned HTML artifact synced at service startup.

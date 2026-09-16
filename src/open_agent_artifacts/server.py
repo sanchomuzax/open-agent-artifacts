@@ -11,7 +11,9 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import __version__
+from .presentation import make_presentation
 from .store import (
+    DEFAULT_PRINCIPAL_ID,
     MAX_COMMENT_BYTES,
     MAX_CONTENT_BYTES,
     ConflictError,
@@ -167,8 +169,24 @@ def _handler_for(store: Store, api_token: str | None):
                 return
             segments = self._segments(path)
             try:
-                if segments == ["api", "artifacts"]:
-                    query = parse_qs(parsed.query).get("query", [None])[0]
+                params = parse_qs(parsed.query)
+                if segments == ["api", "me"]:
+                    principal = self.server.store.get_principal(DEFAULT_PRINCIPAL_ID)
+                    self._send_json(HTTPStatus.OK, {
+                        "principal": principal,
+                        "multi_user": False,
+                        "capabilities": {"identity_scopes": False, "sharing": False},
+                    })
+                elif segments == ["api", "artifacts"] and any(key in params for key in ("scope", "limit", "cursor", "view")):
+                    query = params.get("q", params.get("query", [None]))[0]
+                    scope = params.get("scope", ["all"])[0]
+                    limit = int(params.get("limit", ["50"])[0])
+                    cursor = params.get("cursor", [None])[0]
+                    self._send_json(HTTPStatus.OK, self.server.store.list_catalog(
+                        scope=scope, query=query, limit=limit, cursor=cursor,
+                    ))
+                elif segments == ["api", "artifacts"]:
+                    query = params.get("query", [None])[0]
                     include_archived = parse_qs(parsed.query).get("include_archived", ["false"])[0] == "true"
                     self._send_json(HTTPStatus.OK, self.server.store.list_artifacts(query, include_archived))
                 elif len(segments) == 3 and segments[1] == "artifacts":
@@ -180,6 +198,10 @@ def _handler_for(store: Store, api_token: str | None):
                     self._send_json(HTTPStatus.OK, self.server.store.list_comments(segments[2], status))
                 elif len(segments) == 3 and segments[1] == "versions":
                     self._send_json(HTTPStatus.OK, self.server.store.get_version(segments[2]))
+                elif len(segments) == 4 and segments[1] == "versions" and segments[3] == "presentation":
+                    version = self.server.store.get_version(segments[2])
+                    artifact = self.server.store.get_artifact(version["artifact_id"])
+                    self._send_json(HTTPStatus.OK, make_presentation(artifact["kind"], version["content"], version["id"]))
                 elif len(segments) == 4 and segments[1] == "versions" and segments[3] == "comments":
                     version = self.server.store.get_version(segments[2])
                     status = parse_qs(parsed.query).get("status", [None])[0]
@@ -236,6 +258,17 @@ def _handler_for(store: Store, api_token: str | None):
                     )
                 elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "archive":
                     self._send_json(HTTPStatus.OK, self.server.store.archive_artifact(segments[2]))
+                elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "visit":
+                    self._send_json(HTTPStatus.OK, self.server.store.record_visit(segments[2]))
+                elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "rename":
+                    self._send_json(HTTPStatus.OK, self.server.store.rename_artifact(segments[2], payload["title"]))
+                elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "duplicate":
+                    self._send_json(HTTPStatus.CREATED, self.server.store.duplicate_artifact(segments[2], payload.get("created_by", "api")))
+                elif len(segments) == 4 and segments[1] == "artifacts" and segments[3] == "restore":
+                    self._send_json(HTTPStatus.CREATED, self.server.store.restore_version(
+                        segments[2], payload["version_id"], payload.get("created_by", "api"),
+                        expected_current_version_id=payload["expected_current_version_id"],
+                    ))
                 else:
                     self._error(HTTPStatus.NOT_FOUND, "not_found", "API resource not found")
             except StoreError as error:

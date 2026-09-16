@@ -2,491 +2,939 @@
   "use strict";
 
   const state = {
-    artifacts: [],
+    catalog: {
+      scope: "all",
+      view: localStorage.getItem("oaa_view_mode") || "grid",
+      query: "",
+      snapshot: null,
+      nextCursor: null,
+      loading: false,
+    },
+    items: [],
+    me: null,
     artifact: null,
     versions: [],
     version: null,
+    presentation: null,
     comments: [],
-    selection: null,
-    viewMode: localStorage.getItem("oaa_view_mode") || "list",
-    pinnedOnly: false,
     commentsVisible: true,
+    sourceMode: false,
+    historyOpen: false,
+    selection: null,
+    composer: null,
   };
+
   const $ = (id) => document.getElementById(id);
   const apiToken = () => localStorage.getItem("oaa_api_token") || "";
 
+  function node(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+  }
+
+  function button(label, className = "button secondary", type = "button") {
+    const element = node("button", className, label);
+    element.type = type;
+    return element;
+  }
+
   async function api(path, options = {}) {
     const headers = { Accept: "application/json", ...(options.headers || {}) };
-    if (options.body) headers["Content-Type"] = "application/json";
+    if (options.body !== undefined) headers["Content-Type"] = "application/json";
     if (apiToken()) headers.Authorization = `Bearer ${apiToken()}`;
     const response = await fetch(path, { ...options, headers, cache: "no-store" });
-    let payload = null;
-    try { payload = await response.json(); } catch (_) { payload = {}; }
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("json") ? await response.json() : await response.text();
     if (!response.ok) throw new Error(payload.message || `${response.status} ${response.statusText}`);
     return payload;
   }
 
-  function setStatus(element, message, kind = "muted") {
+  function setStatus(message, kind = "muted") {
+    const element = $("catalog-status");
     if (!element) return;
     element.textContent = message || "";
     element.className = `status ${kind}`;
   }
 
-  function shortText(value, limit = 180) {
-    const text = String(value || "").replace(/\s+/g, " ").trim();
-    return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+  function formatDate(value) {
+    if (!value) return "Unknown time";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
   }
 
-  function sortArtifacts(items) {
-    const sort = $("sort-select")?.value || "updated";
-    return [...items].sort((left, right) => {
-      if (sort === "title") return left.title.localeCompare(right.title);
-      if (sort === "pinned") return Number(right.pinned) - Number(left.pinned) || right.updated_at.localeCompare(left.updated_at);
-      return Number(right.pinned) - Number(left.pinned) || right.updated_at.localeCompare(left.updated_at);
+  function formatGroup(value) {
+    if (!value) return "Earlier";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "Earlier";
+    const now = new Date();
+    if (date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate()) return "Today";
+    if (date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()) return "This month";
+    return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(date);
+  }
+
+  function persistCatalogState() {
+    sessionStorage.setItem("oaa_catalog_state", JSON.stringify({
+      scope: state.catalog.scope,
+      view: state.catalog.view,
+      query: state.catalog.query,
+    }));
+  }
+
+  function restoreCatalogState() {
+    try {
+      const stored = JSON.parse(sessionStorage.getItem("oaa_catalog_state") || "null");
+      if (stored && typeof stored === "object") {
+        if (["all", "pinned", "yours", "shared"].includes(stored.scope)) state.catalog.scope = stored.scope;
+        if (["grid", "list"].includes(stored.view)) state.catalog.view = stored.view;
+        if (typeof stored.query === "string") state.catalog.query = stored.query;
+      }
+    } catch (_) {
+      sessionStorage.removeItem("oaa_catalog_state");
+    }
+  }
+
+  function updateUrlForCatalog(replace = false) {
+    persistCatalogState();
+    const params = new URLSearchParams();
+    if (state.catalog.scope !== "all") params.set("tab", state.catalog.scope);
+    if (state.catalog.view !== "grid") params.set("view", state.catalog.view);
+    if (state.catalog.query) params.set("q", state.catalog.query);
+    const hash = `#/${params.toString() ? `?${params.toString()}` : ""}`;
+    if (replace) history.replaceState({ catalog: true }, "", `${location.pathname}${location.search}${hash}`);
+    else history.pushState({ catalog: true }, "", `${location.pathname}${location.search}${hash}`);
+  }
+
+  function safeUrl(value) {
+    try {
+      const url = new URL(value, location.origin);
+      return ["http:", "https:", "mailto:"].includes(url.protocol) ? url.href : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function anchorExact(anchor) {
+    return anchor?.quote?.exact || anchor?.exact || "";
+  }
+
+  function appendInline(parent, value) {
+    const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^\)]+\))/g;
+    let cursor = 0;
+    for (const match of value.matchAll(pattern)) {
+      const start = match.index || 0;
+      if (start > cursor) parent.append(document.createTextNode(value.slice(cursor, start)));
+      const token = match[0];
+      if (token.startsWith("**")) {
+        parent.append(node("strong", "", token.slice(2, -2)));
+      } else if (token.startsWith("`")) {
+        parent.append(node("code", "inline-code", token.slice(1, -1)));
+      } else if (token.startsWith("*")) {
+        parent.append(node("em", "", token.slice(1, -1)));
+      } else {
+        const link = token.match(/^\[([^\]]+)\]\(([^\)]+)\)$/);
+        const href = link && safeUrl(link[2]);
+        if (href) {
+          const anchor = node("a", "", link[1]);
+          anchor.href = href;
+          anchor.target = "_blank";
+          anchor.rel = "noreferrer noopener";
+          parent.append(anchor);
+        } else {
+          parent.append(document.createTextNode(token));
+        }
+      }
+      cursor = start + token.length;
+    }
+    if (cursor < value.length) parent.append(document.createTextNode(value.slice(cursor)));
+  }
+
+  function renderMarkdown(parent, source) {
+    const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index];
+      if (!line.trim()) { index += 1; continue; }
+      if (/^```/.test(line)) {
+        const language = line.slice(3).trim();
+        const codeLines = [];
+        index += 1;
+        while (index < lines.length && !/^```/.test(lines[index])) codeLines.push(lines[index++]);
+        if (index < lines.length) index += 1;
+        const pre = node("pre", "markdown-code");
+        if (language) pre.dataset.language = language;
+        pre.textContent = codeLines.join("\n");
+        parent.append(pre);
+        continue;
+      }
+      const heading = line.match(/^(#{1,6})\s+(.+)$/);
+      if (heading) {
+        const h = node(`h${heading[1].length}`, "markdown-heading");
+        appendInline(h, heading[2]);
+        parent.append(h);
+        index += 1;
+        continue;
+      }
+      if (/^[-*+]\s+/.test(line)) {
+        const list = node("ul", "markdown-list");
+        while (index < lines.length && /^[-*+]\s+/.test(lines[index])) {
+          const item = node("li");
+          appendInline(item, lines[index].replace(/^[-*+]\s+/, ""));
+          list.append(item);
+          index += 1;
+        }
+        parent.append(list);
+        continue;
+      }
+      if (/^>\s?/.test(line)) {
+        const quote = node("blockquote", "markdown-quote");
+        appendInline(quote, line.replace(/^>\s?/, ""));
+        parent.append(quote);
+        index += 1;
+        continue;
+      }
+      const paragraphLines = [line];
+      index += 1;
+      while (index < lines.length && lines[index].trim() && !/^(#{1,6})\s|^```|^[-*+]\s+|^>\s?/.test(lines[index])) paragraphLines.push(lines[index++]);
+      const paragraph = node("p", "markdown-paragraph");
+      appendInline(paragraph, paragraphLines.join(" "));
+      parent.append(paragraph);
+    }
+  }
+
+  function sanitizeHtmlForSandbox(source, versionId) {
+    const parser = new DOMParser();
+    const documentCopy = parser.parseFromString(String(source || ""), "text/html");
+    documentCopy.querySelectorAll("script, iframe, object, embed, form, base, meta[http-equiv='refresh']").forEach((element) => element.remove());
+    documentCopy.querySelectorAll("*").forEach((element) => {
+      [...element.attributes].forEach((attribute) => {
+        if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
+        if (["src", "href", "action", "formaction"].includes(attribute.name.toLowerCase())) {
+          const value = attribute.value.trim();
+          if (value && !value.startsWith("#") && !value.startsWith("data:image/")) element.removeAttribute(attribute.name);
+        }
+      });
     });
+    const body = documentCopy.body ? documentCopy.body.innerHTML : "";
+    const nonce = "oaa-bridge-v1";
+    const csp = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-oaa-bridge-v1'; base-uri 'none'; form-action 'none'";
+    const bridge = `<script nonce="${nonce}">(function(){document.addEventListener('mouseup',function(){var s=getSelection();if(!s||s.isCollapsed||!s.toString())return;parent.postMessage({type:'oaa-selection',schema:1,nonce:'${nonce}',version_id:${JSON.stringify(versionId)},exact:s.toString()},'*');});})();<\/script>`;
+    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font:16px/1.6 system-ui,sans-serif;margin:1.4rem;color:#edf5f6;background:#101820}img{max-width:100%;height:auto}a{color:#8bdaca}</style></head><body>${body}${bridge}</body></html>`;
+  }
+
+  function highlightExact(parent, exact, commentId) {
+    if (!exact || !parent) return false;
+    const walker = document.createTreeWalker(parent, NodeFilter.SHOW_TEXT);
+    const matches = [];
+    let current;
+    while ((current = walker.nextNode())) {
+      if (current.parentElement && current.parentElement.closest("mark")) continue;
+      const position = current.nodeValue.indexOf(exact);
+      if (position >= 0) matches.push({ node: current, position });
+    }
+    const match = matches[0];
+    if (!match) return false;
+    const range = document.createRange();
+    range.setStart(match.node, match.position);
+    range.setEnd(match.node, match.position + exact.length);
+    const mark = node("mark", "highlighted-quote");
+    mark.dataset.commentId = commentId || "";
+    mark.title = "Open comment";
+    mark.append(range.extractContents());
+    range.insertNode(mark);
+    mark.addEventListener("click", () => focusComment(commentId));
+    return true;
+  }
+
+  function renderPresentation(parent, presentation, comments = []) {
+    parent.replaceChildren();
+    parent.className = "presentation-panel";
+    if (!presentation) {
+      parent.append(node("p", "status", "Presentation unavailable."));
+      return;
+    }
+    if (state.sourceMode || presentation.mode === "escaped-source" || presentation.mode === "unsupported") {
+      const label = node("p", "presentation-label", presentation.mode === "unsupported" ? "Unsupported presentation · source fallback" : "Source view");
+      const source = node("pre", "source-fallback");
+      source.tabIndex = 0;
+      source.textContent = presentation.content || "";
+      parent.append(label, source);
+      comments.forEach((comment) => highlightExact(source, anchorExact(comment.anchor), comment.id));
+      return;
+    }
+    if (presentation.mode === "rendered") {
+      const documentView = node("article", "rendered-markdown");
+      renderMarkdown(documentView, presentation.content);
+      parent.append(documentView);
+      comments.forEach((comment) => highlightExact(documentView, anchorExact(comment.anchor), comment.id));
+      return;
+    }
+    if (presentation.mode === "isolated-html") {
+      const frame = document.createElement("iframe");
+      frame.className = "html-frame";
+      frame.title = state.artifact ? `${state.artifact.title} rendered HTML` : "Rendered HTML artifact";
+      frame.setAttribute("sandbox", "allow-scripts");
+      frame.referrerPolicy = "no-referrer";
+      frame.srcdoc = sanitizeHtmlForSandbox(presentation.content, presentation.version_id);
+      frame.addEventListener("load", () => {
+        comments.forEach((comment) => {
+          // The opaque frame owns its DOM; markers are represented in the side thread.
+          if (anchorExact(comment.anchor)) frame.dataset.commentCount = String(comments.length);
+        });
+      });
+      parent.append(frame);
+      return;
+    }
+    const source = node("pre", "source-fallback");
+    source.textContent = presentation.content || "";
+    parent.append(source);
+  }
+
+  function previewMount(item) {
+    const mount = node("div", "card-preview");
+    mount.dataset.previewVersion = item.preview?.version_id || "";
+    mount.append(node("div", "preview-loading", "Loading preview…"));
+    api(`/api/versions/${encodeURIComponent(item.preview.version_id)}/presentation`)
+      .then((presentation) => renderPreview(mount, presentation))
+      .catch(() => {
+        mount.replaceChildren(node("div", "preview-fallback", "Preview unavailable"));
+      });
+    return mount;
+  }
+
+  function renderPreview(parent, presentation) {
+    parent.replaceChildren();
+    parent.classList.add(`preview-${presentation.mode}`);
+    if (presentation.mode === "rendered") {
+      const mini = node("div", "mini-markdown");
+      renderMarkdown(mini, presentation.content);
+      parent.append(mini);
+    } else if (presentation.mode === "isolated-html") {
+      const frame = document.createElement("iframe");
+      frame.className = "mini-html-frame";
+      frame.title = "HTML preview";
+      frame.setAttribute("sandbox", "allow-scripts");
+      frame.tabIndex = -1;
+      frame.srcdoc = sanitizeHtmlForSandbox(presentation.content, presentation.version_id);
+      parent.append(frame);
+    } else {
+      const source = node("pre", "mini-source");
+      source.textContent = presentation.content || "";
+      parent.append(source);
+    }
+  }
+
+  function catalogItem(item) {
+    const article = node("article", `artifact-card${item.pinned ? " is-pinned" : ""}`);
+    const open = node("button", "artifact-card-open");
+    open.type = "button";
+    open.addEventListener("click", () => openArtifact(item.id));
+    open.append(previewMount(item));
+    const body = node("div", "artifact-card-body");
+    const title = node("h3", "artifact-title", item.title);
+    const kind = node("span", "kind-badge", item.kind);
+    const titleLine = node("div", "artifact-title-line");
+    titleLine.append(title, kind);
+    body.append(titleLine);
+    const activity = item.activity || { kind: "Edited", time: item.content_updated_at };
+    body.append(node("p", "artifact-activity", `${activity.kind} ${formatDate(activity.time)}`));
+    const footer = node("div", "artifact-card-footer");
+    footer.append(node("span", "artifact-comments", `${item.comment_count || 0} comments`));
+    footer.append(node("span", "artifact-version", `v${item.current_version_sequence || 1}`));
+    body.append(footer);
+    open.append(body);
+    const pin = button(item.pinned ? "★" : "☆", "pin-button");
+    pin.title = item.pinned ? "Unpin artifact" : "Pin artifact";
+    pin.setAttribute("aria-pressed", String(Boolean(item.pinned)));
+    pin.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      await togglePin(item.id, !item.pinned);
+    });
+    article.append(open, pin);
+    return article;
   }
 
   function renderCatalog() {
     const list = $("artifact-list");
     if (!list) return;
-    const query = $("search").value.trim().toLowerCase();
-    const filtered = state.artifacts.filter((item) => {
-      const matchesQuery = !query || `${item.title} ${item.slug} ${item.preview || ""}`.toLowerCase().includes(query);
-      return matchesQuery && (!state.pinnedOnly || item.pinned);
-    });
-    const items = sortArtifacts(filtered);
-    list.className = `artifact-list ${state.viewMode}-view`;
+    list.className = `artifact-grid ${state.catalog.view}-view`;
     list.replaceChildren();
+    const items = state.items;
     $("artifact-count").textContent = String(items.length);
     if (!items.length) {
-      const empty = document.createElement("p");
-      empty.className = "no-comments catalog-empty";
-      empty.textContent = state.pinnedOnly ? "No pinned artifacts." : (query ? "No matching artifacts." : "No artifacts yet.");
+      const empty = node("section", "catalog-empty");
+      empty.append(node("div", "empty-mark", "✦"));
+      empty.append(node("h2", "", state.catalog.scope === "pinned" ? "No pinned artifacts" : (state.catalog.query ? "No matching artifacts" : "Your workspace is ready")));
+      empty.append(node("p", "", state.catalog.query ? "Try a different search." : "Create an artifact to start building your workspace."));
+      const create = button("New artifact", "button primary");
+      create.addEventListener("click", openCreateDialog);
+      empty.append(create);
       list.append(empty);
-      return;
+    } else if (state.catalog.view === "list") {
+      renderListGroups(list, items);
+    } else {
+      const pinned = items.filter((item) => item.pinned);
+      const rest = items.filter((item) => !item.pinned);
+      if (pinned.length) appendCatalogGroup(list, "Pinned", pinned, "pinned-group");
+      rest.forEach((item) => list.append(catalogItem(item)));
     }
-    items.forEach((item) => list.append(renderArtifactItem(item)));
-  }
-
-  function renderArtifactItem(item) {
-    const card = document.createElement("article");
-    card.className = `artifact-item${state.artifact?.id === item.id ? " active" : ""}${item.pinned ? " pinned" : ""}`;
-    const open = document.createElement("button");
-    open.className = "artifact-open";
-    open.type = "button";
-    open.addEventListener("click", () => loadArtifact(item.id));
-
-    const head = document.createElement("div");
-    head.className = "artifact-item-head";
-    const title = document.createElement("strong");
-    title.textContent = item.title;
-    const type = document.createElement("span");
-    type.className = "kind-badge";
-    type.textContent = item.kind;
-    head.append(title, type);
-
-    const meta = document.createElement("span");
-    meta.className = "artifact-meta";
-    meta.textContent = `v${item.current_version_sequence || 1} · ${item.comment_count || 0} comment${item.comment_count === 1 ? "" : "s"}`;
-    const preview = document.createElement("p");
-    preview.className = "artifact-preview";
-    preview.textContent = shortText(item.preview || "No preview available.", 220);
-    const footer = document.createElement("span");
-    footer.className = "artifact-open-hint";
-    footer.textContent = "Open workspace →";
-    open.append(head, meta, preview, footer);
-
-    const pin = document.createElement("button");
-    pin.className = "pin-button";
-    pin.type = "button";
-    pin.setAttribute("aria-pressed", String(Boolean(item.pinned)));
-    pin.title = item.pinned ? "Unpin artifact" : "Pin artifact";
-    pin.textContent = item.pinned ? "★" : "☆";
-    pin.addEventListener("click", async (event) => {
-      event.stopPropagation();
-      await setPinned(item.id, !item.pinned);
+    $("catalog-more").hidden = !state.catalog.nextCursor;
+    document.querySelectorAll(".scope-tab").forEach((tab) => {
+      const active = tab.dataset.scope === state.catalog.scope;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
     });
-
-    card.append(open, pin);
-    return card;
+    document.querySelectorAll(".view-button").forEach((control) => {
+      const active = control.dataset.view === state.catalog.view;
+      control.classList.toggle("active", active);
+      control.setAttribute("aria-pressed", String(active));
+    });
   }
 
-  async function setPinned(artifactId, pinned) {
-    try {
-      const updated = await api(`/api/artifacts/${encodeURIComponent(artifactId)}/${pinned ? "pin" : "unpin"}`, {
-        method: "POST",
-        body: "{}",
+  function appendCatalogGroup(parent, label, items, className = "") {
+    const section = node("section", `catalog-group ${className}`);
+    section.append(node("h2", "group-heading", label));
+    const grid = node("div", "group-grid");
+    items.forEach((item) => grid.append(catalogItem(item)));
+    section.append(grid);
+    parent.append(section);
+  }
+
+  function renderListGroups(parent, items) {
+    const pinned = items.filter((item) => item.pinned);
+    const rest = items.filter((item) => !item.pinned);
+    if (pinned.length) appendCatalogGroup(parent, "Pinned", pinned, "pinned-group");
+    const groups = new Map();
+    rest.forEach((item) => {
+      const key = formatGroup(item.content_updated_at || item.updated_at);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item);
+    });
+    groups.forEach((group, label) => {
+      const section = node("section", "catalog-group list-group");
+      section.append(node("h2", "group-heading", label));
+      const rows = node("div", "artifact-list-rows");
+      group.forEach((item) => {
+        const row = node("article", "artifact-row");
+        row.tabIndex = 0;
+        row.addEventListener("click", () => openArtifact(item.id));
+        row.addEventListener("keydown", (event) => { if (event.key === "Enter") openArtifact(item.id); });
+        row.append(node("div", `row-kind kind-${item.kind}`, item.kind.slice(0, 1).toUpperCase()));
+        const info = node("div", "row-info");
+        info.append(node("strong", "", item.title));
+        const activity = item.activity || { kind: "Edited", time: item.content_updated_at };
+        info.append(node("span", "artifact-activity", `${activity.kind} ${formatDate(activity.time)}`));
+        row.append(info);
+        row.append(node("span", "row-meta", `v${item.current_version_sequence || 1}`));
+        const pin = node("span", "row-pin", item.pinned ? "★" : "");
+        row.append(pin);
+        rows.append(row);
       });
-      state.artifacts = state.artifacts.map((item) => item.id === artifactId ? { ...item, ...updated } : item);
-      if (state.artifact?.id === artifactId) state.artifact = { ...state.artifact, ...updated };
-      renderCatalog();
-      renderDetailPin();
-    } catch (error) {
-      setStatus($("catalog-status"), error.message, "error");
-    }
+      section.append(rows);
+      parent.append(section);
+    });
   }
 
-  async function loadCatalog() {
-    setStatus($("catalog-status"), "Loading catalog…");
+  async function loadCatalog(append = false) {
+    if (state.catalog.loading) return;
+    state.catalog.loading = true;
+    setStatus(append ? "Loading more…" : "Loading artifacts…");
+    const params = new URLSearchParams({ scope: state.catalog.scope, view: state.catalog.view, limit: "40" });
+    if (state.catalog.query) params.set("q", state.catalog.query);
+    if (append && state.catalog.nextCursor) params.set("cursor", state.catalog.nextCursor);
     try {
-      state.artifacts = await api("/api/artifacts");
-      setStatus($("catalog-status"), state.artifacts.length ? "" : "Catalog is empty.");
+      const result = await api(`/api/artifacts?${params.toString()}`);
+      state.items = append ? state.items.concat(result.items || []) : (result.items || []);
+      state.catalog.snapshot = result.snapshot;
+      state.catalog.nextCursor = result.next_cursor;
+      setStatus(state.items.length ? "" : "No artifacts in this view.");
       renderCatalog();
     } catch (error) {
-      setStatus($("catalog-status"), error.message, "error");
+      setStatus(error.message, "error");
+    } finally {
+      state.catalog.loading = false;
     }
   }
 
-  function routeId() {
-    const match = location.hash.match(/^#\/artifact\/([^/]+)$/);
-    return match ? decodeURIComponent(match[1]) : null;
+  async function togglePin(artifactId, pinned) {
+    try {
+      await api(`/api/artifacts/${encodeURIComponent(artifactId)}/${pinned ? "pin" : "unpin"}`, { method: "POST", body: "{}" });
+      await loadCatalog();
+      if (state.artifact?.id === artifactId) {
+        state.artifact.pinned = pinned;
+        renderWorkspaceHeader();
+      }
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
   }
 
-  function renderEmptyState() {
-    document.body.classList.remove("detail-mode");
+  function route() {
+    const match = location.hash.match(/^#\/artifact\/([^/?]+)(?:\?version=([^&]+))?$/);
+    if (match) {
+      showWorkspace(decodeURIComponent(match[1]), match[2] ? decodeURIComponent(match[2]) : null);
+    } else {
+      showCatalog();
+    }
+  }
+
+  function openArtifact(artifactId, versionId = null) {
+    persistCatalogState();
+    const suffix = versionId ? `?version=${encodeURIComponent(versionId)}` : "";
+    history.pushState({ artifact: artifactId, version: versionId, catalog: state.catalog }, "", `#/artifact/${encodeURIComponent(artifactId)}${suffix}`);
+    route();
+  }
+
+  function showCatalog() {
+    $("workspace").hidden = true;
+    $("catalog").hidden = false;
+    document.body.classList.remove("workspace-active");
+    restoreCatalogState();
+    $("catalog-search").value = state.catalog.query;
+    loadCatalog();
+  }
+
+  function goHome() {
+    updateUrlForCatalog(false);
+    route();
+  }
+
+  function workspaceButton(label, className = "button secondary") {
+    return button(label, className);
+  }
+
+  function showWorkspace(artifactId, versionId) {
+    $("catalog").hidden = true;
+    $("workspace").hidden = false;
+    document.body.classList.add("workspace-active");
+    if (state.artifact?.id === artifactId && state.version?.id === versionId) return;
     state.artifact = null;
-    state.versions = [];
     state.version = null;
+    state.presentation = null;
     state.comments = [];
-    $("detail").innerHTML = `
-      <div class="empty-state">
-        <div class="empty-mark">◎</div>
-        <p class="eyebrow">READY FOR REVIEW</p>
-        <h2>Pick an artifact to open its workspace</h2>
-        <p>Browse a preview, open immutable versions, pin important work, and leave highlighted feedback in one place.</p>
-        <button id="empty-new-artifact" class="button" type="button">Create first artifact</button>
-      </div>`;
-    $("empty-new-artifact").addEventListener("click", openCreateDialog);
-    renderCatalog();
+    state.versions = [];
+    const workspace = $("workspace");
+    workspace.replaceChildren(node("div", "workspace-loading", "Opening artifact workspace…"));
+    Promise.all([
+      api(`/api/artifacts/${encodeURIComponent(artifactId)}`),
+      api(`/api/artifacts/${encodeURIComponent(artifactId)}/versions`),
+    ]).then(async ([artifact, versions]) => {
+      state.artifact = artifact;
+      state.versions = versions;
+      const selected = versionId ? versions.find((item) => item.id === versionId) : versions.find((item) => item.id === artifact.current_version_id) || versions[0];
+      if (!selected) throw new Error("Artifact has no version.");
+      state.version = await api(`/api/versions/${encodeURIComponent(selected.id)}`);
+      state.presentation = await api(`/api/versions/${encodeURIComponent(selected.id)}/presentation`);
+      state.comments = await api(`/api/versions/${encodeURIComponent(selected.id)}/comments`);
+      await api(`/api/artifacts/${encodeURIComponent(artifactId)}/visit`, { method: "POST", body: "{}" });
+      renderWorkspace();
+    }).catch((error) => {
+      workspace.replaceChildren(node("div", "workspace-error", error.message));
+    });
   }
 
-  async function loadArtifact(id, updateHash = true) {
-    if (updateHash) {
-      const nextHash = `#/artifact/${encodeURIComponent(id)}`;
-      if (location.hash !== nextHash) {
-        location.hash = nextHash;
-        return;
-      }
-    }
-    try {
-      state.artifact = await api(`/api/artifacts/${encodeURIComponent(id)}`);
-      state.versions = await api(`/api/artifacts/${encodeURIComponent(id)}/versions`);
-      const current = state.versions.find((item) => item.id === state.artifact.current_version_id) || state.versions[0];
-      document.body.classList.add("detail-mode");
-      renderCatalog();
-      renderDetailShell();
-      await loadVersion(current.id);
-    } catch (error) {
-      $("detail").replaceChildren();
-      const errorState = document.createElement("div");
-      errorState.className = "empty-state error-state";
-      errorState.textContent = error.message;
-      $("detail").append(errorState);
-    }
-  }
-
-  function renderDetailPin() {
-    const button = $("detail-pin");
-    if (!button || !state.artifact) return;
-    button.setAttribute("aria-pressed", String(Boolean(state.artifact.pinned)));
-    button.textContent = state.artifact.pinned ? "★ Pinned" : "☆ Pin";
-  }
-
-  function renderDetailShell() {
-    const template = $("detail-template").content.cloneNode(true);
-    $("detail").replaceChildren(template);
-    $("detail-title").textContent = state.artifact.title;
-    $("detail-kind").textContent = state.artifact.kind;
-    $("detail-meta").textContent = `${state.artifact.slug} · ${state.versions.length} immutable version${state.versions.length === 1 ? "" : "s"}`;
-    const select = $("version-select");
-    state.versions.forEach((version) => {
-      const option = document.createElement("option");
-      option.value = version.id;
-      option.textContent = `v${version.sequence}${version.id === state.artifact.current_version_id ? " · current" : ""}`;
-      select.append(option);
-    });
-    renderDetailPin();
-    select.addEventListener("change", () => loadVersion(select.value));
-    $("detail-pin").addEventListener("click", () => setPinned(state.artifact.id, !state.artifact.pinned));
-    $("back-catalog").addEventListener("click", () => {
-      history.replaceState(null, "", location.pathname + location.search);
-      renderEmptyState();
-    });
-    $("compare-toggle").addEventListener("click", () => {
-      const panel = $("diff-panel");
-      if (panel && state.version.id !== state.artifact.current_version_id) {
-        panel.hidden = !panel.hidden;
-        renderCompareState();
-      }
-    });
-    $("artifact-content").addEventListener("mouseup", captureSelection);
-    $("artifact-content").addEventListener("keyup", captureSelection);
-    $("comment-form").addEventListener("submit", submitComment);
-    $("comments-toggle").addEventListener("click", () => {
+  function renderWorkspace() {
+    const workspace = $("workspace");
+    workspace.replaceChildren();
+    const header = node("header", "workspace-header");
+    const home = workspaceButton("⌂", "icon-button");
+    home.title = "Artifacts home";
+    home.setAttribute("aria-label", "Artifacts home");
+    home.addEventListener("click", goHome);
+    const trail = node("div", "workspace-trail");
+    trail.append(node("span", "breadcrumb", "Artifacts"), node("span", "breadcrumb-separator", "/"));
+    const titleButton = workspaceButton(state.artifact.title, "title-menu-trigger");
+    titleButton.addEventListener("click", toggleTitleMenu);
+    trail.append(titleButton);
+    header.append(home, trail);
+    const actions = node("div", "workspace-actions");
+    const commentsButton = workspaceButton(`Comments ${state.comments.length}`, "comments-toolbar-button");
+    commentsButton.id = "comments-toggle";
+    commentsButton.setAttribute("aria-expanded", String(state.commentsVisible));
+    commentsButton.addEventListener("click", () => {
       state.commentsVisible = !state.commentsVisible;
-      renderCommentVisibility();
+      renderCommentsPanel();
     });
-    $("new-version").addEventListener("click", openVersionEditor);
-    $("cancel-version").addEventListener("click", closeVersionEditor);
-    $("new-version-form").addEventListener("submit", submitVersion);
-    renderCommentVisibility();
+    actions.append(commentsButton);
+    const pin = workspaceButton(state.artifact.pinned ? "★ Pinned" : "☆ Pin", "workspace-pin");
+    pin.id = "workspace-pin";
+    pin.setAttribute("aria-pressed", String(Boolean(state.artifact.pinned)));
+    pin.addEventListener("click", () => togglePin(state.artifact.id, !state.artifact.pinned));
+    actions.append(pin);
+    header.append(actions);
+    workspace.append(header);
+
+    const menu = node("div", "title-menu");
+    menu.id = "title-menu";
+    menu.hidden = true;
+    menu.append(node("p", "title-menu-heading", state.artifact.title));
+    const all = workspaceButton("All artifacts", "menu-item");
+    all.addEventListener("click", goHome);
+    const pinItem = workspaceButton(state.artifact.pinned ? "Unpin" : "Pin", "menu-item");
+    pinItem.addEventListener("click", () => { togglePin(state.artifact.id, !state.artifact.pinned); menu.hidden = true; });
+    const history = workspaceButton(`Version history (${state.versions.length})`, "menu-item");
+    history.addEventListener("click", () => { state.historyOpen = true; renderVersionDrawer(); menu.hidden = true; });
+    const refresh = workspaceButton("Refresh", "menu-item");
+    refresh.addEventListener("click", () => {
+      const artifactId = state.artifact.id;
+      const versionId = state.version.id;
+      menu.hidden = true;
+      state.artifact = null;
+      showWorkspace(artifactId, versionId);
+    });
+    menu.append(all, pinItem, history, refresh);
+    workspace.append(menu);
+
+    const meta = node("div", "workspace-meta");
+    meta.append(node("span", "kind-badge", state.artifact.kind));
+    meta.append(node("span", "", `Version ${state.version.sequence}`));
+    if (state.version.id !== state.artifact.current_version_id) meta.append(node("span", "historical-badge", "Viewing historical version · read-only"));
+    workspace.append(meta);
+
+    const contentLayout = node("div", "workspace-layout");
+    const main = node("main", "artifact-main");
+    const toolbar = node("div", "presentation-toolbar");
+    toolbar.append(node("span", "presentation-title", state.artifact.kind === "markdown" ? "Rendered Markdown" : state.artifact.kind === "html" ? "Rendered HTML" : "Artifact preview"));
+    const sourceToggle = workspaceButton(state.sourceMode ? "Rendered view" : "Source", "button secondary");
+    sourceToggle.addEventListener("click", () => { state.sourceMode = !state.sourceMode; renderPresentation($("presentation"), state.presentation, state.comments); });
+    toolbar.append(sourceToggle);
+    if (state.version.id === state.artifact.current_version_id) {
+      const newVersion = workspaceButton("New version", "button primary");
+      newVersion.addEventListener("click", openVersionEditor);
+      toolbar.append(newVersion);
+    }
+    main.append(toolbar);
+    const presentation = node("section", "presentation-panel");
+    presentation.id = "presentation";
+    renderPresentation(presentation, state.presentation, state.comments);
+    main.append(presentation);
+    const versionEditor = buildVersionEditor();
+    versionEditor.hidden = true;
+    main.append(versionEditor);
+    main.append(buildInlineCommentHint());
+    contentLayout.append(main);
+    const aside = node("aside", "comments-panel");
+    aside.id = "comments-panel";
+    contentLayout.append(aside);
+    workspace.append(contentLayout);
+    renderCommentsPanel();
+    renderVersionDrawer();
   }
 
-  async function loadVersion(versionId) {
-    state.version = await api(`/api/versions/${encodeURIComponent(versionId)}`);
-    const select = $("version-select");
-    if (select) select.value = versionId;
-    $("version-badge").textContent = `v${state.version.sequence}${versionId === state.artifact.current_version_id ? " · current" : ""}`;
-    state.selection = null;
-    $("selected-text").textContent = "None";
-    $("comment-submit").disabled = true;
-    $("selection-hint").textContent = "Select text above to attach a highlighted comment to this version.";
-    renderSourceContent([]);
-    renderCompareState();
-    await loadComments();
+  function renderWorkspaceHeader() {
+    const buttonElement = $("workspace-pin");
+    if (!buttonElement || !state.artifact) return;
+    buttonElement.textContent = state.artifact.pinned ? "★ Pinned" : "☆ Pin";
+    buttonElement.setAttribute("aria-pressed", String(Boolean(state.artifact.pinned)));
   }
 
-  function buildLineDiff(oldContent, newContent) {
-    const oldLines = oldContent.split("\n");
-    const newLines = newContent.split("\n");
-    if (oldLines.length > 1000 || newLines.length > 1000) return "Diff omitted: this version is too large for an in-browser comparison.";
-    const table = Array.from({ length: oldLines.length + 1 }, () => Array(newLines.length + 1).fill(0));
-    for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
-      for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
-        table[oldIndex][newIndex] = oldLines[oldIndex] === newLines[newIndex]
-          ? table[oldIndex + 1][newIndex + 1] + 1
-          : Math.max(table[oldIndex + 1][newIndex], table[oldIndex][newIndex + 1]);
+  function toggleTitleMenu() {
+    const menu = $("title-menu");
+    if (menu) menu.hidden = !menu.hidden;
+  }
+
+  function buildInlineCommentHint() {
+    const hint = node("p", "selection-hint", "Select text in the rendered document to attach a highlighted comment.");
+    hint.id = "selection-hint";
+    return hint;
+  }
+
+  function buildVersionEditor() {
+    const section = node("section", "version-editor");
+    section.id = "version-editor";
+    const heading = node("div", "editor-heading");
+    heading.append(node("h2", "", "Publish a new version"));
+    const close = button("×", "icon-button");
+    close.setAttribute("aria-label", "Close editor");
+    close.addEventListener("click", () => { section.hidden = true; });
+    heading.append(close);
+    const form = document.createElement("form");
+    form.id = "new-version-form";
+    const contentLabel = node("label", "", "Content");
+    const content = document.createElement("textarea");
+    content.id = "version-content";
+    content.rows = 14;
+    content.required = true;
+    content.value = state.version.content;
+    const summaryLabel = node("label", "", "Change summary");
+    const summary = document.createElement("input");
+    summary.id = "version-summary";
+    summary.maxLength = 2048;
+    const submit = button("Publish new version", "button primary", "submit");
+    const status = node("p", "status");
+    status.id = "version-status";
+    form.append(contentLabel, content, summaryLabel, summary, submit, status);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      status.textContent = "Publishing…";
+      try {
+        await api(`/api/artifacts/${encodeURIComponent(state.artifact.id)}/versions`, {
+          method: "POST",
+          body: JSON.stringify({ content: content.value, created_by: "web", expected_current_version_id: state.artifact.current_version_id, change_summary: summary.value.trim() }),
+        });
+        section.hidden = true;
+        showWorkspace(state.artifact.id, null);
+      } catch (error) {
+        status.textContent = error.message;
+        status.className = "status error";
+        submit.disabled = false;
       }
-    }
-    const result = [];
-    let oldIndex = 0;
-    let newIndex = 0;
-    while (oldIndex < oldLines.length || newIndex < newLines.length) {
-      if (oldIndex < oldLines.length && newIndex < newLines.length && oldLines[oldIndex] === newLines[newIndex]) {
-        result.push(` ${oldLines[oldIndex]}`); oldIndex += 1; newIndex += 1;
-      } else if (newIndex < newLines.length && (oldIndex === oldLines.length || table[oldIndex][newIndex + 1] >= table[oldIndex + 1][newIndex])) {
-        result.push(`+${newLines[newIndex]}`); newIndex += 1;
-      } else { result.push(`-${oldLines[oldIndex]}`); oldIndex += 1; }
-    }
-    return result.join("\n");
-  }
-
-  function renderCompareState() {
-    const toggle = $("compare-toggle");
-    const panel = $("diff-panel");
-    if (!toggle || !panel || !state.version) return;
-    const isCurrent = state.version.id === state.artifact.current_version_id;
-    toggle.disabled = isCurrent;
-    toggle.textContent = isCurrent ? "Current version" : (panel.hidden ? "Compare current" : "Hide diff");
-    if (isCurrent) panel.hidden = true;
-    if (!isCurrent) {
-      const current = state.versions.find((version) => version.id === state.artifact.current_version_id);
-      $("diff-content").textContent = current ? buildLineDiff(state.version.content, current.content) : "Current version unavailable.";
-    }
-  }
-
-  function anchorStart(source, anchor) {
-    const exact = anchor?.exact;
-    if (!exact) return -1;
-    const candidates = [];
-    let cursor = 0;
-    while (true) {
-      const index = source.indexOf(exact, cursor);
-      if (index < 0) break;
-      candidates.push(index);
-      cursor = index + Math.max(exact.length, 1);
-    }
-    if (candidates.length === 1) return candidates[0];
-    const contextual = candidates.find((index) => {
-      const prefix = anchor.prefix || "";
-      const suffix = anchor.suffix || "";
-      return (!prefix || source.slice(Math.max(0, index - prefix.length), index).endsWith(prefix))
-        && (!suffix || source.slice(index + exact.length, index + exact.length + suffix.length).startsWith(suffix));
     });
-    return contextual === undefined ? -1 : contextual;
+    section.append(heading, form);
+    return section;
   }
 
-  function renderSourceContent(comments) {
-    const content = $("artifact-content");
-    if (!content || !state.version) return;
-    content.replaceChildren();
-    const ranges = comments.map((comment) => {
-      const start = anchorStart(state.version.content, comment.anchor);
-      return start < 0 ? null : { start, end: start + comment.anchor.exact.length, comment };
-    }).filter(Boolean).sort((left, right) => left.start - right.start);
-    let cursor = 0;
-    ranges.forEach((range) => {
-      if (range.start < cursor) return;
-      content.append(document.createTextNode(state.version.content.slice(cursor, range.start)));
-      const mark = document.createElement("mark");
-      mark.className = "highlighted-quote";
-      mark.dataset.commentId = range.comment.id;
-      mark.title = "Open comment";
-      mark.textContent = state.version.content.slice(range.start, range.end);
-      mark.addEventListener("click", () => focusComment(range.comment.id));
-      content.append(mark);
-      cursor = range.end;
-    });
-    content.append(document.createTextNode(state.version.content.slice(cursor)));
+  function openVersionEditor() {
+    const editor = $("version-editor");
+    if (editor) editor.hidden = false;
   }
 
-  function captureSelection() {
-    const content = $("artifact-content");
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || !selection.toString()) return;
-    if (!content.contains(selection.anchorNode) || !content.contains(selection.focusNode)) return;
-    const exact = selection.toString();
-    const source = state.version.content;
-    const start = source.indexOf(exact);
-    if (start < 0 || source.indexOf(exact, start + 1) >= 0) {
-      state.selection = { kind: "text", exact, prefix: "", suffix: "", ambiguous: true };
-    } else {
-      state.selection = { kind: "text", exact, prefix: source.slice(Math.max(0, start - 80), start), suffix: source.slice(start + exact.length, start + exact.length + 80) };
+  function renderCommentsPanel() {
+    const panel = $("comments-panel");
+    if (!panel) return;
+    const toolbar = $("comments-toggle");
+    if (toolbar) {
+      toolbar.textContent = `Comments ${state.comments.length}`;
+      toolbar.setAttribute("aria-expanded", String(state.commentsVisible));
     }
-    $("selected-text").textContent = exact.length > 180 ? `${exact.slice(0, 177)}…` : exact;
-    $("comment-submit").disabled = Boolean(state.selection.ambiguous);
-    $("selection-hint").textContent = state.selection.ambiguous
-      ? "This selection occurs more than once; select a more specific passage."
-      : "Selection attached to this version. Submit to keep it highlighted.";
-  }
-
-  async function loadComments() {
-    state.comments = await api(`/api/versions/${encodeURIComponent(state.version.id)}/comments`);
-    const container = $("comments");
-    container.replaceChildren();
-    $("comment-count").textContent = String(state.comments.length);
-    if (!state.comments.length) {
-      const empty = document.createElement("div");
-      empty.className = "no-comments";
-      empty.textContent = "No comments on this version.";
-      container.append(empty);
-    } else {
-      state.comments.forEach((comment) => container.append(renderComment(comment)));
-    }
-    renderSourceContent(state.comments);
-    renderCommentVisibility();
+    panel.replaceChildren();
+    const heading = node("div", "comments-heading");
+    heading.append(node("h2", "", "Comments"), node("span", "comment-count", String(state.comments.length)));
+    const toggle = button(state.commentsVisible ? "Hide all comments" : "Show all comments", "button secondary");
+    toggle.id = "comments-toggle-panel";
+    toggle.addEventListener("click", () => { state.commentsVisible = !state.commentsVisible; renderCommentsPanel(); renderPresentation($("presentation"), state.presentation, state.commentsVisible ? state.comments : []); });
+    heading.append(toggle);
+    panel.append(heading);
+    const list = node("div", "comments-list");
+    list.hidden = !state.commentsVisible;
+    if (!state.comments.length) list.append(node("p", "no-comments", "No comments on this version."));
+    state.comments.forEach((comment) => list.append(renderComment(comment)));
+    panel.append(list);
   }
 
   function renderComment(comment) {
-    const card = document.createElement("article");
+    const card = node("article", `comment-card${comment.status === "resolved" ? " resolved" : ""}`);
     card.id = `comment-${comment.id}`;
-    card.className = `comment${comment.status === "resolved" ? " resolved" : ""}`;
-    const body = document.createElement("div");
-    body.className = "comment-body";
-    body.textContent = comment.body;
-    const quote = document.createElement("blockquote");
-    quote.className = "comment-quote";
-    quote.textContent = comment.anchor?.exact || "No text quote";
+    card.append(node("p", "comment-body", comment.body));
+    const quote = node("blockquote", "comment-quote", anchorExact(comment.anchor) || "Selection unavailable");
     quote.addEventListener("click", () => focusComment(comment.id));
-    const footer = document.createElement("div");
-    footer.className = "comment-footer";
-    const status = document.createElement("span");
-    status.className = "comment-status-badge";
-    status.textContent = comment.status;
-    footer.append(status);
+    card.append(quote);
+    const footer = node("div", "comment-footer");
+    footer.append(node("span", "comment-status", comment.status));
     if (comment.status !== "resolved") {
-      const resolve = document.createElement("button");
-      resolve.type = "button";
-      resolve.textContent = "Resolve";
-      resolve.addEventListener("click", () => changeCommentStatus(comment.id));
+      const resolve = button("Resolve", "text-button");
+      resolve.addEventListener("click", () => resolveComment(comment.id));
       footer.append(resolve);
     }
-    card.append(body, quote, footer);
+    card.append(footer);
     return card;
   }
 
   function focusComment(commentId) {
     const card = $(`comment-${commentId}`);
     if (!card) return;
-    if (!state.commentsVisible) {
-      state.commentsVisible = true;
-      renderCommentVisibility();
-    }
+    if (!state.commentsVisible) { state.commentsVisible = true; renderCommentsPanel(); }
     card.scrollIntoView({ behavior: "smooth", block: "nearest" });
     card.classList.add("comment-focus");
     window.setTimeout(() => card.classList.remove("comment-focus"), 1200);
   }
 
-  function renderCommentVisibility() {
-    const container = $("comments");
-    const toggle = $("comments-toggle");
-    if (!container || !toggle) return;
-    container.hidden = !state.commentsVisible;
-    toggle.setAttribute("aria-expanded", String(state.commentsVisible));
-    toggle.textContent = state.commentsVisible ? "Hide comments" : "Show comments";
-  }
-
-  async function submitComment(event) {
-    event.preventDefault();
-    const body = $("comment-body").value.trim();
-    const status = $("comment-status");
-    if (!body || !state.selection || state.selection.ambiguous) return;
-    setStatus(status, "Saving…");
+  async function resolveComment(commentId) {
     try {
-      await api(`/api/versions/${encodeURIComponent(state.version.id)}/comments`, {
-        method: "POST",
-        body: JSON.stringify({ artifact_id: state.artifact.id, body, anchor: state.selection }),
-      });
-      $("comment-body").value = "";
-      state.selection = null;
-      $("selected-text").textContent = "None";
-      $("comment-submit").disabled = true;
-      setStatus(status, "Comment saved and highlighted.", "success");
-      await loadComments();
-      await loadCatalog();
+      await api(`/api/comments/${encodeURIComponent(commentId)}/events`, { method: "POST", body: JSON.stringify({ status: "resolved", actor: "web" }) });
+      state.comments = await api(`/api/versions/${encodeURIComponent(state.version.id)}/comments`);
+      renderCommentsPanel();
+      renderPresentation($("presentation"), state.presentation, state.commentsVisible ? state.comments : []);
     } catch (error) {
-      setStatus(status, error.message, "error");
+      setStatus(error.message, "error");
     }
   }
 
-  async function changeCommentStatus(commentId) {
-    try {
-      await api(`/api/comments/${encodeURIComponent(commentId)}/events`, {
-        method: "POST",
-        body: JSON.stringify({ status: "resolved", actor: "web" }),
+  function showComposer(rect, selection) {
+    closeComposer();
+    const composer = node("form", "inline-composer");
+    composer.id = "inline-composer";
+    composer.style.left = `${Math.max(12, Math.min(window.innerWidth - 340, rect.left))}px`;
+    composer.style.top = `${Math.min(window.innerHeight - 190, rect.bottom + 10)}px`;
+    composer.append(node("p", "composer-label", "Comment on selection"));
+    composer.append(node("blockquote", "composer-quote", selection.exact));
+    const textarea = document.createElement("textarea");
+    textarea.rows = 3;
+    textarea.maxLength = 16384;
+    textarea.required = true;
+    textarea.placeholder = "What should change?";
+    const actions = node("div", "composer-actions");
+    const cancel = button("Cancel", "button secondary");
+    cancel.addEventListener("click", closeComposer);
+    const send = button("Send comment", "button primary", "submit");
+    actions.append(cancel, send);
+    const status = node("p", "status");
+    composer.append(textarea, actions, status);
+    composer.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      send.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        await api(`/api/versions/${encodeURIComponent(state.version.id)}/comments`, {
+          method: "POST",
+          body: JSON.stringify({ artifact_id: state.artifact.id, body: textarea.value.trim(), anchor: selection }),
+        });
+        closeComposer();
+        state.comments = await api(`/api/versions/${encodeURIComponent(state.version.id)}/comments`);
+        renderCommentsPanel();
+        renderPresentation($("presentation"), state.presentation, state.comments);
+        await loadCatalog();
+      } catch (error) {
+        status.textContent = error.message;
+        status.className = "status error";
+        send.disabled = false;
+      }
+    });
+    document.body.append(composer);
+    textarea.focus();
+    state.composer = composer;
+  }
+
+  function closeComposer() {
+    if (state.composer) state.composer.remove();
+    state.composer = null;
+    state.selection = null;
+  }
+
+  function selectionFromRange(range, exact) {
+    const container = $("presentation");
+    const text = container?.textContent || "";
+    const start = text.indexOf(exact);
+    return {
+      schema: 2,
+      type: "text-range",
+      coordinate_space: "unicode-code-points",
+      start: Math.max(0, start),
+      end: Math.max(0, start) + exact.length,
+      quote: {
+        exact,
+        prefix: start >= 0 ? text.slice(Math.max(0, start - 80), start) : "",
+        suffix: start >= 0 ? text.slice(start + exact.length, start + exact.length + 80) : "",
+      },
+    };
+  }
+
+  function captureSelection(range, exact, rect) {
+    if (!state.version || !exact.trim()) return;
+    state.selection = selectionFromRange(range, exact);
+    showComposer(rect, state.selection);
+  }
+
+  function renderVersionDrawer() {
+    const existing = $("version-drawer");
+    if (existing) existing.remove();
+    if (!state.historyOpen || !state.artifact) return;
+    const drawer = node("aside", "version-drawer");
+    drawer.id = "version-drawer";
+    const heading = node("div", "drawer-heading");
+    heading.append(node("h2", "", "Version history"));
+    const close = button("×", "icon-button");
+    close.setAttribute("aria-label", "Close version history");
+    close.addEventListener("click", () => { state.historyOpen = false; renderVersionDrawer(); });
+    heading.append(close);
+    drawer.append(heading);
+    state.versions.forEach((version) => {
+      const row = node("button", `version-row${state.version?.id === version.id ? " active" : ""}`);
+      row.type = "button";
+      row.append(node("span", "version-number", `v${version.sequence}`));
+      const info = node("span", "version-info");
+      info.append(node("strong", "", version.id === state.artifact.current_version_id ? "Current" : (version.change_summary || "Immutable version")));
+      info.append(node("small", "", formatDate(version.created_at)));
+      row.append(info);
+      row.addEventListener("click", () => {
+        state.historyOpen = true;
+        openArtifact(state.artifact.id, version.id);
       });
-      await loadComments();
-      await loadCatalog();
-    } catch (error) {
-      setStatus($("comment-status"), error.message, "error");
-    }
-  }
-
-  function openVersionEditor() {
-    const current = state.versions.find((version) => version.id === state.artifact.current_version_id) || state.version;
-    $("version-content").value = current.content;
-    $("version-summary").value = "";
-    $("version-status").textContent = "";
-    $("version-editor").hidden = false;
-    $("version-content").focus();
-  }
-
-  function closeVersionEditor() {
-    $("version-editor").hidden = true;
-  }
-
-  async function submitVersion(event) {
-    event.preventDefault();
-    const status = $("version-status");
-    const content = $("version-content").value;
-    if (!content.trim()) return;
-    setStatus(status, "Publishing…");
-    try {
-      await api(`/api/artifacts/${encodeURIComponent(state.artifact.id)}/versions`, {
-        method: "POST",
-        body: JSON.stringify({
-          content,
-          created_by: "web",
-          expected_current_version_id: state.artifact.current_version_id,
-          change_summary: $("version-summary").value.trim(),
-        }),
+      drawer.append(row);
+    });
+    if (state.version?.id !== state.artifact.current_version_id) {
+      const current = button("Back to current", "button primary");
+      current.addEventListener("click", () => { state.historyOpen = false; openArtifact(state.artifact.id); });
+      drawer.append(current);
+      const restore = button("Restore this version", "button secondary");
+      restore.addEventListener("click", async () => {
+        restore.disabled = true;
+        restore.textContent = "Restoring…";
+        try {
+          await api(`/api/artifacts/${encodeURIComponent(state.artifact.id)}/restore`, {
+            method: "POST",
+            body: JSON.stringify({ version_id: state.version.id, created_by: "web", expected_current_version_id: state.artifact.current_version_id }),
+          });
+          state.historyOpen = false;
+          openArtifact(state.artifact.id);
+        } catch (error) {
+          restore.disabled = false;
+          restore.textContent = error.message;
+        }
       });
-      closeVersionEditor();
-      await loadCatalog();
-      await loadArtifact(state.artifact.id);
-    } catch (error) {
-      setStatus(status, error.message, "error");
+      drawer.append(restore);
     }
+    $("workspace").append(drawer);
+  }
+
+  function handleSandboxSelection(event) {
+    const data = event.data;
+    const frame = $("presentation")?.querySelector("iframe");
+    if (!frame || event.source !== frame.contentWindow || !data || data.type !== "oaa-selection" || data.schema !== 1 || data.nonce !== "oaa-bridge-v1") return;
+    if (!state.version || data.version_id !== state.version.id || typeof data.exact !== "string" || !data.exact.trim()) return;
+    const rect = frame.getBoundingClientRect();
+    captureSelection(null, data.exact, { left: rect.left + 16, bottom: rect.top + 70 });
+  }
+
+  function bindEvents() {
+    $("new-artifact").addEventListener("click", openCreateDialog);
+    $("catalog-search").addEventListener("input", (event) => {
+      state.catalog.query = event.target.value.trim();
+      state.catalog.nextCursor = null;
+      persistCatalogState();
+      loadCatalog();
+    });
+    document.querySelectorAll(".scope-tab").forEach((tab) => tab.addEventListener("click", () => {
+      if (tab.classList.contains("identity-disabled")) return;
+      state.catalog.scope = tab.dataset.scope;
+      state.catalog.nextCursor = null;
+      updateUrlForCatalog(true);
+      loadCatalog();
+    }));
+    document.querySelectorAll(".view-button").forEach((control) => control.addEventListener("click", () => {
+      state.catalog.view = control.dataset.view;
+      localStorage.setItem("oaa_view_mode", state.catalog.view);
+      state.catalog.nextCursor = null;
+      updateUrlForCatalog(true);
+      renderCatalog();
+      loadCatalog();
+    }));
+    $("load-more").addEventListener("click", () => loadCatalog(true));
+    $("close-new-artifact").addEventListener("click", closeCreateDialog);
+    $("cancel-new-artifact").addEventListener("click", closeCreateDialog);
+    $("new-artifact-form").addEventListener("submit", submitNewArtifact);
+    $("new-artifact-dialog").addEventListener("click", (event) => { if (event.target === $("new-artifact-dialog")) closeCreateDialog(); });
+    document.addEventListener("selectionchange", () => {
+      const selection = window.getSelection();
+      const container = $("presentation");
+      if (!selection || selection.isCollapsed || !container || !container.contains(selection.anchorNode) || !container.contains(selection.focusNode)) return;
+      const exact = selection.toString().trim();
+      if (!exact) return;
+      captureSelection(selection.getRangeAt(0), exact, selection.getRangeAt(0).getBoundingClientRect());
+    });
+    window.addEventListener("message", handleSandboxSelection);
+    window.addEventListener("popstate", route);
+    window.addEventListener("hashchange", route);
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "/" && document.activeElement?.tagName !== "INPUT" && document.activeElement?.tagName !== "TEXTAREA") {
+        event.preventDefault();
+        $("catalog-search")?.focus();
+      }
+      if (event.key === "Escape") closeComposer();
+    });
   }
 
   function openCreateDialog() {
@@ -504,65 +952,41 @@
   async function submitNewArtifact(event) {
     event.preventDefault();
     const status = $("new-artifact-status");
-    setStatus(status, "Creating…");
+    const submit = event.submitter;
+    if (submit) submit.disabled = true;
+    status.textContent = "Creating…";
     try {
       const artifact = await api("/api/artifacts", {
         method: "POST",
-        body: JSON.stringify({
-          title: $("new-artifact-title").value.trim(),
-          kind: $("new-artifact-kind").value,
-          content: $("new-artifact-content").value,
-          created_by: "web",
-        }),
+        body: JSON.stringify({ title: $("new-artifact-title").value.trim(), kind: $("new-artifact-kind").value, content: $("new-artifact-content").value, created_by: "web" }),
       });
       closeCreateDialog();
       $("new-artifact-form").reset();
-      await loadCatalog();
-      await loadArtifact(artifact.id);
+      openArtifact(artifact.id);
     } catch (error) {
-      setStatus(status, error.message, "error");
+      status.textContent = error.message;
+      status.className = "status error";
+      if (submit) submit.disabled = false;
     }
   }
 
-  function setViewMode(mode) {
-    state.viewMode = mode;
-    localStorage.setItem("oaa_view_mode", mode);
-    ["list", "cards"].forEach((name) => {
-      const button = $(`${name}-view`);
-      const active = name === mode;
-      button.classList.toggle("active", active);
-      button.setAttribute("aria-pressed", String(active));
-    });
-    renderCatalog();
+  async function initialize() {
+    restoreCatalogState();
+    $("catalog-search").value = state.catalog.query;
+    try {
+      state.me = await api("/api/me");
+      const enabled = Boolean(state.me.multi_user && state.me.capabilities?.identity_scopes);
+      document.querySelectorAll(".identity-tab").forEach((tab) => {
+        tab.hidden = !enabled;
+        tab.classList.toggle("identity-disabled", !enabled);
+      });
+      if (!enabled && ["yours", "shared"].includes(state.catalog.scope)) state.catalog.scope = "all";
+    } catch (_) {
+      document.querySelectorAll(".identity-tab").forEach((tab) => { tab.hidden = true; tab.classList.add("identity-disabled"); });
+    }
+    bindEvents();
+    route();
   }
 
-  $("reload").addEventListener("click", loadCatalog);
-  $("search").addEventListener("input", renderCatalog);
-  $("sort-select").addEventListener("change", renderCatalog);
-  $("list-view").addEventListener("click", () => setViewMode("list"));
-  $("cards-view").addEventListener("click", () => setViewMode("cards"));
-  $("pinned-filter").addEventListener("click", () => {
-    state.pinnedOnly = !state.pinnedOnly;
-    $("pinned-filter").setAttribute("aria-pressed", String(state.pinnedOnly));
-    $("pinned-filter").classList.toggle("active", state.pinnedOnly);
-    renderCatalog();
-  });
-  $("new-artifact").addEventListener("click", openCreateDialog);
-  $("empty-new-artifact").addEventListener("click", openCreateDialog);
-  $("close-new-artifact").addEventListener("click", closeCreateDialog);
-  $("cancel-new-artifact").addEventListener("click", closeCreateDialog);
-  $("new-artifact-form").addEventListener("submit", submitNewArtifact);
-  $("new-artifact-dialog").addEventListener("click", (event) => {
-    if (event.target === $("new-artifact-dialog")) closeCreateDialog();
-  });
-  window.addEventListener("hashchange", () => {
-    const id = routeId();
-    if (id) loadArtifact(id, false);
-    else renderEmptyState();
-  });
-  setViewMode(state.viewMode);
-  loadCatalog().then(() => {
-    const id = routeId();
-    if (id) loadArtifact(id, false);
-  });
+  initialize();
 })();

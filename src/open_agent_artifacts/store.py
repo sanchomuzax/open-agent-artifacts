@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import sqlite3
 import uuid
@@ -10,6 +11,7 @@ from typing import Any
 MAX_CONTENT_BYTES = 2 * 1024 * 1024
 MAX_COMMENT_BYTES = 16 * 1024
 ALLOWED_KINDS = {"text", "markdown", "code", "html", "svg", "mermaid"}
+DEFAULT_PRINCIPAL_ID = "principal:local"
 
 
 class StoreError(Exception):
@@ -95,8 +97,7 @@ class Store:
                     change_summary TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
                     created_by TEXT NOT NULL,
-                    UNIQUE(artifact_id, sequence),
-                    UNIQUE(artifact_id, content_hash)
+                    UNIQUE(artifact_id, sequence)
                 );
                 CREATE TABLE IF NOT EXISTS comments (
                     id TEXT PRIMARY KEY,
@@ -133,6 +134,118 @@ class Store:
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(artifacts)").fetchall()}
             if "pinned_at" not in columns:
                 connection.execute("ALTER TABLE artifacts ADD COLUMN pinned_at TEXT")
+            if "owner_principal_id" not in columns:
+                connection.execute("ALTER TABLE artifacts ADD COLUMN owner_principal_id TEXT")
+            if "visibility" not in columns:
+                connection.execute("ALTER TABLE artifacts ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'")
+            if "content_updated_at" not in columns:
+                connection.execute("ALTER TABLE artifacts ADD COLUMN content_updated_at TEXT")
+            connection.executescript(
+                f"""
+                CREATE TABLE IF NOT EXISTS principals (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK(kind IN ('user', 'agent', 'service')),
+                    subject TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
+                    disabled_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS artifact_grants (
+                    id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+                    principal_id TEXT NOT NULL REFERENCES principals(id),
+                    role TEXT NOT NULL CHECK(role IN ('viewer', 'commenter', 'editor')),
+                    granted_by_principal_id TEXT NOT NULL REFERENCES principals(id),
+                    created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
+                    revoked_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS artifact_preferences (
+                    principal_id TEXT NOT NULL REFERENCES principals(id),
+                    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+                    pinned_at TEXT,
+                    comments_visible INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY(principal_id, artifact_id)
+                );
+                CREATE TABLE IF NOT EXISTS artifact_visits (
+                    principal_id TEXT NOT NULL REFERENCES principals(id),
+                    artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+                    last_viewed_at TEXT NOT NULL,
+                    PRIMARY KEY(principal_id, artifact_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_artifacts_content_updated
+                    ON artifacts(content_updated_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_grants_principal
+                    ON artifact_grants(principal_id, revoked_at);
+                INSERT OR IGNORE INTO principals(id, kind, subject, display_name)
+                    VALUES ('{DEFAULT_PRINCIPAL_ID}', 'user', 'local', 'Local user');
+                UPDATE artifacts
+                   SET owner_principal_id = COALESCE(owner_principal_id, '{DEFAULT_PRINCIPAL_ID}'),
+                       content_updated_at = COALESCE(content_updated_at, updated_at)
+                 WHERE owner_principal_id IS NULL OR content_updated_at IS NULL;
+                """
+            )
+            self._drop_legacy_content_hash_unique(connection)
+
+    @staticmethod
+    def _drop_legacy_content_hash_unique(connection: sqlite3.Connection) -> None:
+        """Rebuild old databases whose content-hash uniqueness blocked restore."""
+        for index in connection.execute("PRAGMA index_list('versions')").fetchall():
+            if not index["unique"]:
+                continue
+            columns = [row["name"] for row in connection.execute(f"PRAGMA index_info('{index['name']}')").fetchall()]
+            if columns != ["artifact_id", "content_hash"]:
+                continue
+            connection.execute("PRAGMA foreign_keys = OFF")
+            try:
+                connection.executescript(
+                    f"""
+                    ALTER TABLE comment_events RENAME TO comment_events__legacy_hash_migration;
+                    ALTER TABLE comments RENAME TO comments__legacy_hash_migration;
+                    ALTER TABLE versions RENAME TO versions__legacy_hash_migration;
+                    CREATE TABLE versions (
+                        id TEXT PRIMARY KEY,
+                        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+                        sequence INTEGER NOT NULL,
+                        parent_version_id TEXT REFERENCES versions(id),
+                        content TEXT NOT NULL,
+                        content_hash TEXT NOT NULL,
+                        change_summary TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
+                        created_by TEXT NOT NULL,
+                        UNIQUE(artifact_id, sequence)
+                    );
+                    INSERT INTO versions SELECT * FROM versions__legacy_hash_migration;
+                    CREATE TABLE comments (
+                        id TEXT PRIMARY KEY,
+                        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+                        version_id TEXT NOT NULL REFERENCES versions(id),
+                        body TEXT NOT NULL,
+                        anchor_json TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'open'
+                            CHECK(status IN ('open', 'addressed', 'resolved')),
+                        addressed_in_version_id TEXT REFERENCES versions(id),
+                        created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
+                        updated_at TEXT NOT NULL DEFAULT ({_now_sql()})
+                    );
+                    INSERT INTO comments SELECT * FROM comments__legacy_hash_migration;
+                    CREATE TABLE comment_events (
+                        id TEXT PRIMARY KEY,
+                        comment_id TEXT NOT NULL REFERENCES comments(id),
+                        status TEXT NOT NULL
+                            CHECK(status IN ('open', 'addressed', 'resolved')),
+                        actor TEXT NOT NULL,
+                        addressed_in_version_id TEXT REFERENCES versions(id),
+                        created_at TEXT NOT NULL DEFAULT ({_now_sql()})
+                    );
+                    INSERT INTO comment_events SELECT * FROM comment_events__legacy_hash_migration;
+                    DROP TABLE comment_events__legacy_hash_migration;
+                    DROP TABLE comments__legacy_hash_migration;
+                    DROP TABLE versions__legacy_hash_migration;
+                    """
+                )
+            finally:
+                connection.execute("PRAGMA foreign_keys = ON")
+            break
 
     def _slug(self, title: str, artifact_id: str) -> str:
         base = "-".join(title.lower().split())
@@ -218,6 +331,12 @@ class Store:
                    VALUES (?, ?, 1, ?, ?, ?)""",
                 (version_id, artifact_id, content, content_hash, created_by),
             )
+            connection.execute(
+                f"""UPDATE artifacts
+                       SET owner_principal_id = ?, content_updated_at = {_now_sql()}
+                     WHERE id = ?""",
+                (DEFAULT_PRINCIPAL_ID, artifact_id),
+            )
             if idempotency_key:
                 connection.execute(
                     """INSERT INTO idempotency_keys(scope, key, request_hash, result_id)
@@ -253,14 +372,150 @@ class Store:
             ).fetchall()
             return [self._artifact_dict(row) for row in rows]
 
+    def get_principal(self, principal_id: str = DEFAULT_PRINCIPAL_ID) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM principals WHERE id = ?", (principal_id,)).fetchone()
+            if row is None:
+                raise NotFoundError(f"principal not found: {principal_id}")
+            return dict(row)
+
+    @staticmethod
+    def _encode_cursor(payload: dict[str, Any]) -> str:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_cursor(cursor: str) -> dict[str, Any]:
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            value = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValidationError("cursor is invalid") from error
+        if not isinstance(value, dict) or not value.get("snapshot"):
+            raise ValidationError("cursor is invalid")
+        return value
+
+    def list_catalog(
+        self,
+        *,
+        scope: str = "all",
+        query: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+        principal_id: str = DEFAULT_PRINCIPAL_ID,
+    ) -> dict[str, Any]:
+        if scope not in {"all", "pinned", "yours", "shared"}:
+            raise ValidationError("scope must be all, pinned, yours, or shared")
+        if not 1 <= limit <= 100:
+            raise ValidationError("limit must be between 1 and 100")
+        decoded = self._decode_cursor(cursor) if cursor else None
+        snapshot = decoded["snapshot"] if decoded else None
+        if decoded and decoded.get("principal_id") != principal_id:
+            raise ValidationError("cursor principal does not match request")
+        if decoded and decoded.get("scope") != scope:
+            raise ValidationError("cursor scope does not match request")
+        with self._connect() as connection:
+            if snapshot is None:
+                snapshot = connection.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0]
+            clauses = ["a.archived_at IS NULL", "a.content_updated_at <= ?"]
+            params: list[Any] = [snapshot]
+            if query:
+                clauses.append("(a.title LIKE ? OR a.slug LIKE ?)")
+                pattern = f"%{query}%"
+                params.extend([pattern, pattern])
+            if scope == "pinned":
+                clauses.append("p.pinned_at IS NOT NULL")
+            elif scope == "yours":
+                clauses.append("a.owner_principal_id = ?")
+                params.append(principal_id)
+            elif scope == "shared":
+                clauses.append("g.principal_id = ? AND g.revoked_at IS NULL")
+                params.append(principal_id)
+            rows = connection.execute(
+                f"""SELECT a.*, v.sequence AS current_version_sequence,
+                           v.id AS preview_version_id,
+                           (SELECT COUNT(*) FROM comments c WHERE c.artifact_id = a.id) AS comment_count,
+                           p.pinned_at AS principal_pinned_at,
+                           av.last_viewed_at
+                    FROM artifacts a
+                    LEFT JOIN versions v ON v.id = a.current_version_id
+                    LEFT JOIN artifact_preferences p ON p.artifact_id = a.id AND p.principal_id = ?
+                    LEFT JOIN artifact_visits av ON av.artifact_id = a.id AND av.principal_id = ?
+                    LEFT JOIN artifact_grants g ON g.artifact_id = a.id
+                    WHERE {' AND '.join(clauses)}
+                    GROUP BY a.id
+                    ORDER BY CASE WHEN p.pinned_at IS NULL THEN 1 ELSE 0 END,
+                             a.content_updated_at DESC, a.id DESC""",
+                [principal_id, principal_id, *params],
+            ).fetchall()
+            items = []
+            for row in rows:
+                item = self._artifact_dict(row)
+                item["pinned"] = bool(row["principal_pinned_at"] or (scope == "all" and row["pinned_at"]))
+                item["owner"] = {"id": row["owner_principal_id"] or DEFAULT_PRINCIPAL_ID, "display_name": "Local user"}
+                item["viewer_role"] = "owner" if item["owner"]["id"] == principal_id else "viewer"
+                item["visibility"] = row["visibility"] or "private"
+                item["activity"] = {
+                    "kind": "Viewed" if row["last_viewed_at"] and row["last_viewed_at"] > row["content_updated_at"] else "Edited",
+                    "time": row["last_viewed_at"] if row["last_viewed_at"] and row["last_viewed_at"] > row["content_updated_at"] else row["content_updated_at"],
+                }
+                item["preview"] = {
+                    "status": "ready",
+                    "kind": row["kind"],
+                    "version_id": row["preview_version_id"],
+                    "url": f"/api/versions/{row['preview_version_id']}/presentation",
+                    "alt": f"{row['title']} preview",
+                }
+                item.pop("principal_pinned_at", None)
+                item.pop("last_viewed_at", None)
+                items.append(item)
+            start = 0
+            if decoded:
+                after = decoded.get("after")
+                if isinstance(after, list) and len(after) == 3:
+                    for index, item in enumerate(items):
+                        key = (bool(item["pinned"]), item["content_updated_at"], item["id"])
+                        if key == tuple(after):
+                            start = index + 1
+                            break
+            page = items[start:start + limit]
+            next_cursor = None
+            if start + limit < len(items) and page:
+                last = page[-1]
+                next_cursor = self._encode_cursor({
+                    "snapshot": snapshot,
+                    "scope": scope,
+                    "principal_id": principal_id,
+                    "after": [bool(last["pinned"]), last["content_updated_at"], last["id"]],
+                })
+            return {"items": page, "snapshot": snapshot, "next_cursor": next_cursor}
+
+    def record_visit(self, artifact_id: str, principal_id: str = DEFAULT_PRINCIPAL_ID) -> dict[str, Any]:
+        with self._connect() as connection:
+            self._get_artifact_row(connection, artifact_id)
+            now = connection.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0]
+            connection.execute(
+                """INSERT INTO artifact_visits(principal_id, artifact_id, last_viewed_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(principal_id, artifact_id) DO UPDATE SET last_viewed_at = excluded.last_viewed_at""",
+                (principal_id, artifact_id, now),
+            )
+            return {"artifact_id": artifact_id, "principal_id": principal_id, "last_viewed_at": now}
+
     def set_pinned(self, artifact_id: str, pinned: bool) -> dict[str, Any]:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             self._get_artifact_row(connection, artifact_id)
-            pinned_at = _now_sql() if pinned else "NULL"
+            pinned_at = connection.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0] if pinned else None
             connection.execute(
-                f"UPDATE artifacts SET pinned_at = {pinned_at}, updated_at = {_now_sql()} WHERE id = ?",
-                (artifact_id,),
+                "UPDATE artifacts SET pinned_at = ? WHERE id = ?",
+                (pinned_at, artifact_id),
+            )
+            connection.execute(
+                """INSERT INTO artifact_preferences(principal_id, artifact_id, pinned_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(principal_id, artifact_id) DO UPDATE SET pinned_at = excluded.pinned_at""",
+                (DEFAULT_PRINCIPAL_ID, artifact_id, pinned_at),
             )
             return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
 
@@ -388,7 +643,9 @@ class Store:
                 (version_id, artifact_id, sequence, current_id, content, content_hash, change_summary, created_by),
             )
             connection.execute(
-                f"UPDATE artifacts SET current_version_id = ?, updated_at = {_now_sql()} WHERE id = ?",
+                f"""UPDATE artifacts
+                    SET current_version_id = ?, updated_at = {_now_sql()}, content_updated_at = {_now_sql()}
+                    WHERE id = ?""",
                 (version_id, artifact_id),
             )
             if idempotency_key:
@@ -496,6 +753,47 @@ class Store:
                 "SELECT * FROM comment_events WHERE comment_id = ? ORDER BY created_at", (comment_id,)
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def rename_artifact(self, artifact_id: str, title: str) -> dict[str, Any]:
+        title = _check_text(title, "title", 512)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            artifact = self._get_artifact_row(connection, artifact_id)
+            connection.execute(
+                "UPDATE artifacts SET title = ?, slug = ? WHERE id = ?",
+                (title, self._slug(title, artifact_id), artifact_id),
+            )
+            return self._artifact_dict(self._get_artifact_row(connection, artifact_id))
+
+    def duplicate_artifact(self, artifact_id: str, created_by: str) -> dict[str, Any]:
+        created_by = _check_text(created_by, "created_by", 256)
+        with self._connect() as connection:
+            artifact = self._get_artifact_row(connection, artifact_id)
+            version = self._get_version_row(connection, artifact["current_version_id"])
+            title = f"{artifact['title']} copy"
+            kind = artifact["kind"]
+            content = version["content"]
+        return self.create_artifact(title, kind, content, created_by)
+
+    def restore_version(
+        self,
+        artifact_id: str,
+        version_id: str,
+        created_by: str,
+        *,
+        expected_current_version_id: str,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            version = self._get_version_row(connection, version_id)
+            if version["artifact_id"] != artifact_id:
+                raise ValidationError("version does not belong to artifact")
+        return self.publish_version(
+            artifact_id,
+            version["content"],
+            created_by,
+            expected_current_version_id=expected_current_version_id,
+            change_summary=f"Restore version {version['sequence']}",
+        )
 
     def archive_artifact(self, artifact_id: str) -> dict[str, Any]:
         with self._connect() as connection:

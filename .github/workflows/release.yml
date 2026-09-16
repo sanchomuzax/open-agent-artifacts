@@ -26,6 +26,8 @@ jobs:
           python-version: "3.12"
       - name: Install package and test dependencies
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
       - name: Run release test gate
         run: python -m pytest -v
       - name: Run publication gate
