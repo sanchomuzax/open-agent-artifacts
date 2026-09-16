@@ -32,6 +32,11 @@ def test_reference_workspace_flow(page: Page, running_server):
     expect(page.locator("#catalog")).to_be_visible()
     expect(page.locator("#workspace")).to_be_hidden()
     expect(page.locator("#grid-view")).to_have_attribute("aria-pressed", "true")
+    expect(page.get_by_role("button", name="New")).to_be_visible()
+    expect(page.locator(".catalog-order-note")).to_have_text("Pinned first · recently updated")
+    assert page.locator(".scope-tab[data-scope='all']").count() == 0
+    assert page.locator(".scope-tab[data-scope='pinned']").count() == 0
+    assert page.locator(".topbar").evaluate("element => getComputedStyle(element).position") == "relative"
     expect(page.locator(".scope-tab[data-scope='yours']")).to_be_hidden()
     expect(page.locator(".scope-tab[data-scope='shared']")).to_be_hidden()
     expect(page.locator(".artifact-card").filter(has_text=md["title"])).to_have_count(1)
@@ -41,9 +46,19 @@ def test_reference_workspace_flow(page: Page, running_server):
     expect(page.locator("#list-view")).to_have_attribute("aria-pressed", "true")
     expect(page.locator(".artifact-row").filter(has_text=md["title"])).to_have_count(1)
     page.locator("#grid-view").click()
+    page.locator(".artifact-card").filter(has_text=md["title"]).locator(".pin-button").click()
+    expect(page.locator(".artifact-card").filter(has_text=md["title"])).to_have_class("artifact-card is-pinned")
+    page.locator("#list-view").click()
+    expect(page.locator(".artifact-grid.list-view .artifact-card")).to_have_count(0)
+    expect(page.locator(".artifact-grid.list-view .pinned-group .group-heading")).to_have_text("Pinned")
+    page.locator("#catalog-search").fill(md["title"])
+    expect(page.locator(".artifact-row").filter(has_text=md["title"])).to_have_count(1)
+    page.locator("#catalog-search").fill("")
+    page.locator("#grid-view").click()
     page.locator(".artifact-card").filter(has_text=md["title"]).locator(".artifact-card-open").click()
     expect(page.locator("#catalog")).to_be_hidden()
     expect(page.locator("#workspace")).to_be_visible()
+    expect(page.locator("#version-switcher")).to_have_text("Version 1 ▾")
     expect(page.locator(".presentation-title")).to_have_text("Rendered Markdown")
     expect(page.locator(".rendered-markdown h1")).to_have_text(md_heading)
 
@@ -78,7 +93,7 @@ def test_reference_workspace_flow(page: Page, running_server):
     page.get_by_role("button", name="Restore this version").click()
     expect(page.locator(".workspace-meta")).to_contain_text("Version 3")
     expect(page.locator(".rendered-markdown h1")).to_have_text(md_heading)
-    page.get_by_role("button", name="Artifacts home").click()
+    page.get_by_role("link", name="Artifacts home").click()
     expect(page.locator("#catalog")).to_be_visible()
     expect(page.locator("#workspace")).to_be_hidden()
 

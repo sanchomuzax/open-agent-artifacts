@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 — 2026-09-16
+
+- Replace mini-card list mode with compact pinned-first rows grouped by update time.
+- Stabilize desktop card sizing and make the brand label the sole Home navigation action.
+- Compact the mobile toolbar, rename the create action to `New`, remove the sticky header, and restore an obvious version switcher.
+
 ## 0.2.2 — 2026-09-16
 
 - Make rendered HTML part of the artifact page by disabling inner scrolling and sizing the isolated frame to document content.

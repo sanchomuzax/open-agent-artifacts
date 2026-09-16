@@ -107,7 +107,9 @@ def test_static_home_has_catalog_contract(running_server):
     assert status == 200
     assert headers["Content-Security-Policy"]
     html = request(running_server, "GET", "/")[2]
-    for marker in ("All", "Pinned", "Yours", "Shared with you", "New artifact", "artifact-catalog"):
+    for marker in ("Pinned first", "New", "artifact-catalog"):
         assert marker in html
+    assert 'data-scope="all"' not in html
+    assert 'data-scope="pinned"' not in html
     assert "Ready for review" not in html
     assert 'class="source-content"' not in html

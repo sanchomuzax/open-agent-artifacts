@@ -87,7 +87,7 @@
     try {
       const stored = JSON.parse(sessionStorage.getItem("oaa_catalog_state") || "null");
       if (stored && typeof stored === "object") {
-        if (["all", "pinned", "yours", "shared"].includes(stored.scope)) state.catalog.scope = stored.scope;
+        if (["all", "yours", "shared"].includes(stored.scope)) state.catalog.scope = stored.scope;
         if (["grid", "list"].includes(stored.view)) state.catalog.view = stored.view;
         if (typeof stored.query === "string") state.catalog.query = stored.query;
       }
@@ -405,39 +405,40 @@
     parent.append(section);
   }
 
+  function renderListGroup(parent, label, items, className = "") {
+    const section = node("section", `catalog-group list-group ${className}`);
+    section.append(node("h2", "group-heading", label));
+    const rows = node("div", "artifact-list-rows");
+    items.forEach((item) => {
+      const row = node("article", "artifact-row");
+      row.tabIndex = 0;
+      row.addEventListener("click", () => openArtifact(item.id));
+      row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openArtifact(item.id); } });
+      row.append(node("div", `row-kind kind-${item.kind}`, item.kind.slice(0, 1).toUpperCase()));
+      const info = node("div", "row-info");
+      info.append(node("strong", "", item.title));
+      const activity = item.activity || { kind: "Edited", time: item.content_updated_at };
+      info.append(node("span", "artifact-activity", `${activity.kind} ${formatDate(activity.time)}`));
+      row.append(info);
+      row.append(node("span", "row-meta", `v${item.current_version_sequence || 1}`));
+      row.append(node("span", "row-pin", item.pinned ? "★" : ""));
+      rows.append(row);
+    });
+    section.append(rows);
+    parent.append(section);
+  }
+
   function renderListGroups(parent, items) {
     const pinned = items.filter((item) => item.pinned);
     const rest = items.filter((item) => !item.pinned);
-    if (pinned.length) appendCatalogGroup(parent, "Pinned", pinned, "pinned-group");
+    if (pinned.length) renderListGroup(parent, "Pinned", pinned, "pinned-group");
     const groups = new Map();
     rest.forEach((item) => {
       const key = formatGroup(item.content_updated_at || item.updated_at);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(item);
     });
-    groups.forEach((group, label) => {
-      const section = node("section", "catalog-group list-group");
-      section.append(node("h2", "group-heading", label));
-      const rows = node("div", "artifact-list-rows");
-      group.forEach((item) => {
-        const row = node("article", "artifact-row");
-        row.tabIndex = 0;
-        row.addEventListener("click", () => openArtifact(item.id));
-        row.addEventListener("keydown", (event) => { if (event.key === "Enter") openArtifact(item.id); });
-        row.append(node("div", `row-kind kind-${item.kind}`, item.kind.slice(0, 1).toUpperCase()));
-        const info = node("div", "row-info");
-        info.append(node("strong", "", item.title));
-        const activity = item.activity || { kind: "Edited", time: item.content_updated_at };
-        info.append(node("span", "artifact-activity", `${activity.kind} ${formatDate(activity.time)}`));
-        row.append(info);
-        row.append(node("span", "row-meta", `v${item.current_version_sequence || 1}`));
-        const pin = node("span", "row-pin", item.pinned ? "★" : "");
-        row.append(pin);
-        rows.append(row);
-      });
-      section.append(rows);
-      parent.append(section);
-    });
+    groups.forEach((group, label) => renderListGroup(parent, label, group));
   }
 
   async function loadCatalog(append = false) {
@@ -542,17 +543,17 @@
     const workspace = $("workspace");
     workspace.replaceChildren();
     const header = node("header", "workspace-header");
-    const home = workspaceButton("⌂", "icon-button");
-    home.title = "Artifacts home";
-    home.setAttribute("aria-label", "Artifacts home");
-    home.addEventListener("click", goHome);
     const trail = node("div", "workspace-trail");
     trail.append(node("span", "breadcrumb", "Artifacts"), node("span", "breadcrumb-separator", "/"));
     const titleButton = workspaceButton(state.artifact.title, "title-menu-trigger");
     titleButton.addEventListener("click", toggleTitleMenu);
     trail.append(titleButton);
-    header.append(home, trail);
+    header.append(trail);
     const actions = node("div", "workspace-actions");
+    const versionButton = workspaceButton(`Version ${state.version.sequence} ▾`, "version-switcher");
+    versionButton.id = "version-switcher";
+    versionButton.addEventListener("click", () => { state.historyOpen = true; renderVersionDrawer(); });
+    actions.append(versionButton);
     const commentsButton = workspaceButton(`Comments ${state.comments.length}`, "comments-toolbar-button");
     commentsButton.id = "comments-toggle";
     commentsButton.setAttribute("aria-expanded", String(state.commentsVisible));
@@ -989,9 +990,11 @@
         tab.hidden = !enabled;
         tab.classList.toggle("identity-disabled", !enabled);
       });
+      $("scope-tabs").hidden = !enabled;
       if (!enabled && ["yours", "shared"].includes(state.catalog.scope)) state.catalog.scope = "all";
     } catch (_) {
       document.querySelectorAll(".identity-tab").forEach((tab) => { tab.hidden = true; tab.classList.add("identity-disabled"); });
+      $("scope-tabs").hidden = true;
     }
     bindEvents();
     route();

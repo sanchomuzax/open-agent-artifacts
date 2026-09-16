@@ -182,6 +182,10 @@ class Store:
                    SET owner_principal_id = COALESCE(owner_principal_id, '{DEFAULT_PRINCIPAL_ID}'),
                        content_updated_at = COALESCE(content_updated_at, updated_at)
                  WHERE owner_principal_id IS NULL OR content_updated_at IS NULL;
+                INSERT OR IGNORE INTO artifact_preferences(principal_id, artifact_id, pinned_at)
+                    SELECT '{DEFAULT_PRINCIPAL_ID}', id, pinned_at
+                      FROM artifacts
+                     WHERE pinned_at IS NOT NULL;
                 """
             )
             self._drop_legacy_content_hash_unique(connection)
