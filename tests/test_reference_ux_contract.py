@@ -74,7 +74,7 @@ def test_pin_does_not_change_content_activity_timestamp(running_server):
     assert after["updated_at"] == before
 
 
-def test_presentation_is_rendered_and_html_is_isolated(running_server):
+def test_presentation_contract_returns_source_for_client_isolation(running_server):
     markdown = create(running_server, kind="markdown")
     html = create(running_server, title="HTML", kind="html", content="<h1>Hello</h1><script>throw Error()</script>")
     status, _, md_presentation = request(running_server, "GET", f"/api/versions/{markdown['current_version_id']}/presentation")
@@ -84,8 +84,8 @@ def test_presentation_is_rendered_and_html_is_isolated(running_server):
     status, _, html_presentation = request(running_server, "GET", f"/api/versions/{html['current_version_id']}/presentation")
     assert status == 200
     assert html_presentation["mode"] == "isolated-html"
-    assert "sandbox" in html_presentation["sandbox"]
-    assert "srcdoc" in html_presentation["sandbox"]
+    assert html_presentation["content"] == "<h1>Hello</h1><script>throw Error()</script>"
+    assert "sandbox_srcdoc" not in html_presentation
 
 
 def test_catalog_cursor_is_snapshot_stable(running_server):
@@ -100,6 +100,19 @@ def test_catalog_cursor_is_snapshot_stable(running_server):
     assert status == 200
     assert second["snapshot"] == first["snapshot"]
     assert second["items"]
+
+
+def test_catalog_preview_payload_is_bounded(running_server):
+    create(running_server, "Large one", content="x" * 200_000)
+    create(running_server, "Large two", content="y" * 200_000)
+    status, _, catalog = request(running_server, "GET", "/api/artifacts?scope=all&limit=40")
+    assert status == 200
+    assert len(json.dumps(catalog).encode()) < 16_000
+    for item in catalog["items"]:
+        assert set(item["preview"]) == {"version_id", "kind", "excerpt", "truncated", "alt"}
+        assert len(item["preview"]["excerpt"]) <= 512
+        assert "preview_excerpt" not in item
+        assert "preview_truncated" not in item
 
 
 def test_static_home_has_catalog_contract(running_server):

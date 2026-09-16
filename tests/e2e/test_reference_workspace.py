@@ -39,8 +39,10 @@ def test_reference_workspace_flow(page: Page, running_server):
     assert page.locator(".topbar").evaluate("element => getComputedStyle(element).position") == "relative"
     expect(page.locator(".scope-tab[data-scope='yours']")).to_be_hidden()
     expect(page.locator(".scope-tab[data-scope='shared']")).to_be_hidden()
-    expect(page.locator(".artifact-card").filter(has_text=md["title"])).to_have_count(1)
-    expect(page.locator(".mini-markdown").filter(has_text=md_heading)).to_have_count(1)
+    card = page.locator(".artifact-card").filter(has_text=md["title"])
+    expect(card).to_have_count(1)
+    expect(card.locator(".mini-source")).to_contain_text(md_heading)
+    expect(card.locator("iframe")).to_have_count(0)
 
     page.locator("#list-view").click()
     expect(page.locator("#list-view")).to_have_attribute("aria-pressed", "true")

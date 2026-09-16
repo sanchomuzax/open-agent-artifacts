@@ -70,6 +70,17 @@ class Store:
 
     def initialize(self) -> None:
         with self._connect() as connection:
+            stranded = connection.execute(
+                """SELECT name FROM sqlite_master
+                    WHERE type = 'table' AND name IN (
+                        'versions__legacy_hash_migration',
+                        'comments__legacy_hash_migration',
+                        'comment_events__legacy_hash_migration'
+                    )"""
+            ).fetchall()
+            if stranded:
+                names = ", ".join(row["name"] for row in stranded)
+                raise StoreError(f"stranded legacy migration tables: {names}")
             connection.executescript(
                 f"""
                 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -205,11 +216,11 @@ class Store:
                 continue
             connection.execute("PRAGMA foreign_keys = OFF")
             try:
-                connection.executescript(
-                    f"""
-                    ALTER TABLE comment_events RENAME TO comment_events__legacy_hash_migration;
-                    ALTER TABLE comments RENAME TO comments__legacy_hash_migration;
-                    ALTER TABLE versions RENAME TO versions__legacy_hash_migration;
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("ALTER TABLE comment_events RENAME TO comment_events__legacy_hash_migration")
+                connection.execute("ALTER TABLE comments RENAME TO comments__legacy_hash_migration")
+                connection.execute("ALTER TABLE versions RENAME TO versions__legacy_hash_migration")
+                connection.execute(f"""
                     CREATE TABLE versions (
                         id TEXT PRIMARY KEY,
                         artifact_id TEXT NOT NULL REFERENCES artifacts(id),
@@ -221,8 +232,9 @@ class Store:
                         created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
                         created_by TEXT NOT NULL,
                         UNIQUE(artifact_id, sequence)
-                    );
-                    INSERT INTO versions SELECT * FROM versions__legacy_hash_migration;
+                    )""")
+                connection.execute("INSERT INTO versions SELECT * FROM versions__legacy_hash_migration")
+                connection.execute(f"""
                     CREATE TABLE comments (
                         id TEXT PRIMARY KEY,
                         artifact_id TEXT NOT NULL REFERENCES artifacts(id),
@@ -234,8 +246,9 @@ class Store:
                         addressed_in_version_id TEXT REFERENCES versions(id),
                         created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
                         updated_at TEXT NOT NULL DEFAULT ({_now_sql()})
-                    );
-                    INSERT INTO comments SELECT * FROM comments__legacy_hash_migration;
+                    )""")
+                connection.execute("INSERT INTO comments SELECT * FROM comments__legacy_hash_migration")
+                connection.execute(f"""
                     CREATE TABLE comment_events (
                         id TEXT PRIMARY KEY,
                         comment_id TEXT NOT NULL REFERENCES comments(id),
@@ -244,13 +257,23 @@ class Store:
                         actor TEXT NOT NULL,
                         addressed_in_version_id TEXT REFERENCES versions(id),
                         created_at TEXT NOT NULL DEFAULT ({_now_sql()})
-                    );
-                    INSERT INTO comment_events SELECT * FROM comment_events__legacy_hash_migration;
-                    DROP TABLE comment_events__legacy_hash_migration;
-                    DROP TABLE comments__legacy_hash_migration;
-                    DROP TABLE versions__legacy_hash_migration;
-                    """
+                    )""")
+                connection.execute("INSERT INTO comment_events SELECT * FROM comment_events__legacy_hash_migration")
+                if connection.execute("PRAGMA foreign_key_check").fetchall():
+                    raise StoreError("legacy migration produced foreign-key violations")
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_migrations(version) VALUES ('002_drop_versions_content_hash_unique')"
                 )
+                connection.execute("DROP TABLE comment_events__legacy_hash_migration")
+                connection.execute("DROP TABLE comments__legacy_hash_migration")
+                connection.execute("DROP TABLE versions__legacy_hash_migration")
+                connection.commit()
+            except Exception as error:
+                if connection.in_transaction:
+                    connection.rollback()
+                if isinstance(error, StoreError):
+                    raise
+                raise StoreError("legacy content-hash migration failed") from error
             finally:
                 connection.execute("PRAGMA foreign_keys = ON")
             break
@@ -416,13 +439,27 @@ class Store:
             raise ValidationError("scope must be all, pinned, yours, or shared")
         if not 1 <= limit <= 100:
             raise ValidationError("limit must be between 1 and 100")
+        query = query or None
         decoded = self._decode_cursor(cursor) if cursor else None
+        if decoded and decoded.get("v") != 2:
+            raise ValidationError("cursor version is unsupported")
         snapshot = decoded["snapshot"] if decoded else None
         if decoded and decoded.get("principal_id") != principal_id:
             raise ValidationError("cursor principal does not match request")
         if decoded and decoded.get("scope") != scope:
             raise ValidationError("cursor scope does not match request")
+        if decoded and decoded.get("query") != query:
+            raise ValidationError("cursor query does not match request")
         with self._connect() as connection:
+            pin_rows = connection.execute(
+                "SELECT artifact_id, COALESCE(pinned_at, '') FROM artifact_preferences WHERE principal_id = ? ORDER BY artifact_id",
+                (principal_id,),
+            ).fetchall()
+            pin_fingerprint = hashlib.sha256(
+                json.dumps([list(row) for row in pin_rows], separators=(",", ":")).encode()
+            ).hexdigest()
+            if decoded and decoded.get("pin_fingerprint") != pin_fingerprint:
+                raise ValidationError("cursor invalidated by pin changes")
             if snapshot is None:
                 snapshot = connection.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").fetchone()[0]
             clauses = ["a.archived_at IS NULL", "a.content_updated_at <= ?"]
@@ -439,12 +476,29 @@ class Store:
             elif scope == "shared":
                 clauses.append("g.principal_id = ? AND g.revoked_at IS NULL")
                 params.append(principal_id)
+            rank_sql = "CASE WHEN p.pinned_at IS NULL THEN 1 ELSE 0 END"
+            if decoded:
+                after = decoded.get("after")
+                if (
+                    not isinstance(after, list) or len(after) != 3
+                    or after[0] not in {0, 1}
+                    or not isinstance(after[1], str) or not isinstance(after[2], str)
+                ):
+                    raise ValidationError("cursor after key is invalid")
+                clauses.append(
+                    f"({rank_sql} > ? OR ({rank_sql} = ? AND a.content_updated_at < ?) "
+                    f"OR ({rank_sql} = ? AND a.content_updated_at = ? AND a.id < ?))"
+                )
+                params.extend([after[0], after[0], after[1], after[0], after[1], after[2]])
             rows = connection.execute(
                 f"""SELECT a.*, v.sequence AS current_version_sequence,
                            v.id AS preview_version_id,
+                           substr(v.content, 1, 512) AS preview_excerpt,
+                           length(v.content) > 512 AS preview_truncated,
                            (SELECT COUNT(*) FROM comments c WHERE c.artifact_id = a.id) AS comment_count,
                            p.pinned_at AS principal_pinned_at,
-                           av.last_viewed_at
+                           av.last_viewed_at,
+                           {rank_sql} AS pin_rank
                     FROM artifacts a
                     LEFT JOIN versions v ON v.id = a.current_version_id
                     LEFT JOIN artifact_preferences p ON p.artifact_id = a.id AND p.principal_id = ?
@@ -452,9 +506,9 @@ class Store:
                     LEFT JOIN artifact_grants g ON g.artifact_id = a.id
                     WHERE {' AND '.join(clauses)}
                     GROUP BY a.id
-                    ORDER BY CASE WHEN p.pinned_at IS NULL THEN 1 ELSE 0 END,
-                             a.content_updated_at DESC, a.id DESC""",
-                [principal_id, principal_id, *params],
+                    ORDER BY pin_rank, a.content_updated_at DESC, a.id DESC
+                    LIMIT ?""",
+                [principal_id, principal_id, *params, limit + 1],
             ).fetchall()
             items = []
             for row in rows:
@@ -468,34 +522,32 @@ class Store:
                     "time": row["last_viewed_at"] if row["last_viewed_at"] and row["last_viewed_at"] > row["content_updated_at"] else row["content_updated_at"],
                 }
                 item["preview"] = {
-                    "status": "ready",
                     "kind": row["kind"],
                     "version_id": row["preview_version_id"],
-                    "url": f"/api/versions/{row['preview_version_id']}/presentation",
+                    "excerpt": row["preview_excerpt"] or "",
+                    "truncated": bool(row["preview_truncated"]),
                     "alt": f"{row['title']} preview",
                 }
                 item.pop("principal_pinned_at", None)
                 item.pop("last_viewed_at", None)
+                item.pop("preview_excerpt", None)
+                item.pop("preview_truncated", None)
                 items.append(item)
-            start = 0
-            if decoded:
-                after = decoded.get("after")
-                if isinstance(after, list) and len(after) == 3:
-                    for index, item in enumerate(items):
-                        key = (bool(item["pinned"]), item["content_updated_at"], item["id"])
-                        if key == tuple(after):
-                            start = index + 1
-                            break
-            page = items[start:start + limit]
+            page = items[:limit]
             next_cursor = None
-            if start + limit < len(items) and page:
+            if len(items) > limit and page:
                 last = page[-1]
                 next_cursor = self._encode_cursor({
+                    "v": 2,
                     "snapshot": snapshot,
                     "scope": scope,
+                    "query": query,
                     "principal_id": principal_id,
-                    "after": [bool(last["pinned"]), last["content_updated_at"], last["id"]],
+                    "pin_fingerprint": pin_fingerprint,
+                    "after": [last["pin_rank"], last["content_updated_at"], last["id"]],
                 })
+            for item in page:
+                item.pop("pin_rank", None)
             return {"items": page, "snapshot": snapshot, "next_cursor": next_cursor}
 
     def record_visit(self, artifact_id: str, principal_id: str = DEFAULT_PRINCIPAL_ID) -> dict[str, Any]:

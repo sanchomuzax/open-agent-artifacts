@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from open_agent_artifacts.store import Store
+import pytest
+
+from open_agent_artifacts.store import Store, StoreError
 
 
 def test_legacy_hash_unique_schema_migrates_with_comments(tmp_path):
@@ -52,3 +54,17 @@ def test_legacy_hash_unique_schema_migrates_with_comments(tmp_path):
     assert restored["content"] == "# One"
     with store._connect() as check:
         assert check.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert check.execute("SELECT 1 FROM schema_migrations WHERE version = '002_drop_versions_content_hash_unique'").fetchone()
+        assert check.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_initialize_refuses_stranded_legacy_migration_tables(tmp_path):
+    db_path = tmp_path / "stranded.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE versions__legacy_hash_migration(id TEXT PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    with pytest.raises(StoreError, match="stranded legacy migration"):
+        Store(db_path)
+    with sqlite3.connect(db_path) as check:
+        assert check.execute("SELECT name FROM sqlite_master WHERE name = 'versions'").fetchone() is None

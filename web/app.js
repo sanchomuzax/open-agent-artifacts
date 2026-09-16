@@ -296,45 +296,23 @@
   }
 
   function previewMount(item) {
-    const mount = node("div", "card-preview");
+    const mount = node("button", "card-preview");
+    mount.type = "button";
+    mount.setAttribute("aria-label", `Open “${item.title}” preview`);
     mount.dataset.previewVersion = item.preview?.version_id || "";
-    mount.append(node("div", "preview-loading", "Loading preview…"));
-    api(`/api/versions/${encodeURIComponent(item.preview.version_id)}/presentation`)
-      .then((presentation) => renderPreview(mount, presentation))
-      .catch(() => {
-        mount.replaceChildren(node("div", "preview-fallback", "Preview unavailable"));
-      });
+    mount.addEventListener("click", () => openArtifact(item.id));
+    const excerpt = node("span", "mini-source");
+    excerpt.textContent = `${item.preview?.excerpt || ""}${item.preview?.truncated ? "…" : ""}`;
+    mount.append(excerpt);
     return mount;
-  }
-
-  function renderPreview(parent, presentation) {
-    parent.replaceChildren();
-    parent.classList.add(`preview-${presentation.mode}`);
-    if (presentation.mode === "rendered") {
-      const mini = node("div", "mini-markdown");
-      renderMarkdown(mini, presentation.content);
-      parent.append(mini);
-    } else if (presentation.mode === "isolated-html") {
-      const frame = document.createElement("iframe");
-      frame.className = "mini-html-frame";
-      frame.title = "HTML preview";
-      frame.setAttribute("sandbox", "allow-scripts");
-      frame.tabIndex = -1;
-      frame.srcdoc = sanitizeHtmlForSandbox(presentation.content, presentation.version_id);
-      parent.append(frame);
-    } else {
-      const source = node("pre", "mini-source");
-      source.textContent = presentation.content || "";
-      parent.append(source);
-    }
   }
 
   function catalogItem(item) {
     const article = node("article", `artifact-card${item.pinned ? " is-pinned" : ""}`);
     const open = node("button", "artifact-card-open");
     open.type = "button";
+    open.setAttribute("aria-label", `Open “${item.title}” (${item.kind}, version ${item.current_version_sequence || 1})`);
     open.addEventListener("click", () => openArtifact(item.id));
-    open.append(previewMount(item));
     const body = node("div", "artifact-card-body");
     const title = node("h3", "artifact-title", item.title);
     const kind = node("span", "kind-badge", item.kind);
@@ -350,12 +328,13 @@
     open.append(body);
     const pin = button(item.pinned ? "★" : "☆", "pin-button");
     pin.title = item.pinned ? "Unpin artifact" : "Pin artifact";
+    pin.setAttribute("aria-label", `${item.pinned ? "Unpin" : "Pin"} “${item.title}”`);
     pin.setAttribute("aria-pressed", String(Boolean(item.pinned)));
     pin.addEventListener("click", async (event) => {
       event.stopPropagation();
       await togglePin(item.id, !item.pinned);
     });
-    article.append(open, pin);
+    article.append(previewMount(item), open, pin);
     return article;
   }
 

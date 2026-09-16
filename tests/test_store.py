@@ -162,6 +162,47 @@ def test_project_description_is_repinned_on_sync(tmp_path):
     assert synced["pinned"] is True
 
 
+def test_catalog_cursor_continues_after_anchor_changes(tmp_path):
+    store = make_store(tmp_path)
+    for title in ("One", "Two", "Three"):
+        store.create_artifact(title, "text", title, "test")
+    first = store.list_catalog(limit=1)
+    anchor = first["items"][0]
+    store.publish_version(
+        anchor["id"], "changed", "test",
+        expected_current_version_id=anchor["current_version_id"],
+    )
+    second = store.list_catalog(limit=2, cursor=first["next_cursor"])
+    assert anchor["id"] not in {item["id"] for item in second["items"]}
+    assert {item["id"] for item in first["items"]}.isdisjoint(item["id"] for item in second["items"])
+
+
+def test_catalog_cursor_is_bound_to_query(tmp_path):
+    store = make_store(tmp_path)
+    store.create_artifact("Alpha", "text", "a", "test")
+    store.create_artifact("Alpine", "text", "b", "test")
+    first = store.list_catalog(query="Al", limit=1)
+    with pytest.raises(ValidationError, match="query"):
+        store.list_catalog(query="Alpha", limit=1, cursor=first["next_cursor"])
+
+
+def test_catalog_cursor_rejects_legacy_shape(tmp_path):
+    store = make_store(tmp_path)
+    cursor = store._encode_cursor({"snapshot": "2026-01-01", "scope": "all"})
+    with pytest.raises(ValidationError, match="version"):
+        store.list_catalog(cursor=cursor)
+
+
+def test_catalog_cursor_is_invalidated_by_pin_changes(tmp_path):
+    store = make_store(tmp_path)
+    first_artifact = store.create_artifact("One", "text", "a", "test")
+    store.create_artifact("Two", "text", "b", "test")
+    first = store.list_catalog(limit=1)
+    store.set_pinned(first_artifact["id"], True)
+    with pytest.raises(ValidationError, match="pin changes"):
+        store.list_catalog(limit=1, cursor=first["next_cursor"])
+
+
 def test_comments_are_bound_to_version_and_events_are_audited(tmp_path):
     store = make_store(tmp_path)
     artifact = store.create_artifact("A report", "text", "content", "test")
