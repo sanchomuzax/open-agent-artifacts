@@ -80,6 +80,7 @@ def test_reference_workspace_flow(page: Page, running_server):
     page.get_by_role("button", name="Version history").click()
     expect(page.locator("#version-drawer")).to_be_visible()
     expect(page.locator("#version-drawer .version-row")).to_have_count(1)
+    expect(page.locator("#version-drawer .version-row small")).to_contain_text(":")
     page.get_by_role("button", name="Close version history").click()
     page.get_by_role("button", name="New version").click()
     expect(page.locator("#version-editor")).to_be_visible()

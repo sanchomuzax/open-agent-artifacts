@@ -68,6 +68,19 @@
     return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
   }
 
+  function formatDateTime(value) {
+    if (!value) return "Unknown time";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  }
+
   function formatGroup(value) {
     if (!value) return "Earlier";
     const date = new Date(value);
@@ -892,7 +905,7 @@
       row.append(node("span", "version-number", `v${version.sequence}`));
       const info = node("span", "version-info");
       info.append(node("strong", "", version.id === state.artifact.current_version_id ? "Current" : (version.change_summary || "Immutable version")));
-      info.append(node("small", "", formatDate(version.created_at)));
+      info.append(node("small", "", formatDateTime(version.created_at)));
       row.append(info);
       row.addEventListener("click", () => {
         state.historyOpen = true;
