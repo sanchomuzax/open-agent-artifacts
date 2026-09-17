@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.12 — 2026-09-17
+
+- Add explicit instance identity and storage-class reporting with fail-closed CLI write preflight.
+- Add `create --verify`, read-only `doctor`, synthetic `smoke`, public/API URL separation, and direct version-list alias.
+- Make deployment templates identify persistent production storage and document the verified workflow.
+
 ## 0.2.11 — 2026-09-16
 
 - Add durable event polling, optional signed webhook delivery, agent identity, operation audit, and idempotent writes.

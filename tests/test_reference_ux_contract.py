@@ -32,7 +32,7 @@ def request(server, method, path, payload=None):
 
 @pytest.fixture
 def running_server(tmp_path):
-    server = create_server(tmp_path / "catalog.db")
+    server = create_server(tmp_path / "catalog.db", instance_id="test-catalog", storage_class="persistent")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

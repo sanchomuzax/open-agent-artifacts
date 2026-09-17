@@ -10,7 +10,7 @@ def test_installed_style_server_uses_working_directory_web_assets(tmp_path, monk
     (web_root / "index.html").write_text("<!doctype html><title>cwd asset</title>", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    server = create_server(tmp_path / "installed.db")
+    server = create_server(tmp_path / "installed.db", instance_id="test-static", storage_class="persistent")
     try:
         assert server.static_dir == web_root.resolve()
     finally:

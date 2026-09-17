@@ -20,12 +20,13 @@ Open Agent Artifacts is a review workspace, not a model and not an autonomous co
 
 The shortest agent workflow is:
 
-1. Make sure the Artifacts service is running and set `OAA_URL` to its private URL.
-2. Create an artifact with `artifactctl create`.
-3. Return the verified artifact ID/link to the user.
-4. When asked to address feedback, fetch the current artifact and its open comments.
-5. Publish a new version with `artifactctl publish`, passing the current version ID.
-6. Read the new version back before saying the feedback was addressed.
+1. Make sure the Artifacts service is running, set `OAA_URL` to its API URL, and set `OAA_PUBLIC_URL` separately for user-facing links.
+2. Run `artifactctl doctor` against the expected persistent instance.
+3. Create an artifact with `artifactctl create --verify`.
+4. Return the verified artifact ID/link to the user.
+5. When asked to address feedback, fetch the current artifact and its open comments.
+6. Publish a new version with `artifactctl publish`, passing the current version ID.
+7. Read the new version back before saying the feedback was addressed.
 
 The repository includes the complete command examples in [`docs/agent-integration.md`](docs/agent-integration.md). After installing `artifactctl`, install the bundled Hermes skill with `artifactctl install-agent-skill --agent hermes`; it follows `HERMES_HOME` (including named profiles), reports its target and SHA-256, and never overwrites different user-owned content without `--force`. `AGENTS.md` is only the public contributor guide and is not the artifact runtime configuration.
 

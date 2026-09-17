@@ -27,7 +27,7 @@ def request(server, method, path, payload=None):
 
 @pytest.fixture
 def server(tmp_path):
-    value = create_server(tmp_path / "api.db")
+    value = create_server(tmp_path / "api.db", instance_id="test-mutation-api", storage_class="persistent")
     thread = threading.Thread(target=value.serve_forever, daemon=True)
     thread.start()
     try:

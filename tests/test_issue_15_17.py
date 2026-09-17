@@ -147,7 +147,7 @@ def test_metadata_defaults_and_invalid_values_are_stable(tmp_path):
 
 
 def test_metadata_filters_are_available_through_api_and_search(tmp_path):
-    server = create_server(tmp_path / "api.db")
+    server = create_server(tmp_path / "api.db", instance_id="test-issue-15-17", storage_class="persistent")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -202,7 +202,7 @@ def test_portable_hermes_plugin_package_has_v1_layout_and_safe_manifest():
 
 
 def test_cli_entry_points_cover_metadata_filters_and_skill_install(tmp_path, capsys):
-    server = create_server(tmp_path / "cli.db")
+    server = create_server(tmp_path / "cli.db", instance_id="test-issue-15-17-cli", storage_class="persistent")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from .agent_skill import AgentSkillInstallError, install_agent_skill
@@ -19,6 +21,22 @@ class CLIError(Exception):
 
 class RawOutput(str):
     """CLI output that should not be JSON-encoded."""
+
+
+MUTATING_COMMANDS = {
+    "create",
+    "publish",
+    "feedback",
+    "address",
+    "archive",
+    "rename",
+    "duplicate",
+    "restore",
+    "pin",
+    "unpin",
+    "visit",
+    "metadata",
+}
 
 
 def _read_content(content: str | None, file_path: str | None) -> str | None:
@@ -108,6 +126,237 @@ def _add_operation_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--operation-id")
 
 
+def _add_write_safety_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--allow-ephemeral",
+        action="store_true",
+        help="allow writes to an explicitly ephemeral instance (test/development only)",
+    )
+
+
+def _ensure_write_target(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        instance = _request(args.base_url, "GET", "/api/instance", token=args.token)[1]
+    except CLIError as error:
+        raise CLIError(f"write target could not be verified: {error}") from error
+    instance_id = instance.get("instance_id") if isinstance(instance, dict) else None
+    storage_class = instance.get("storage_class") if isinstance(instance, dict) else None
+    if not instance_id or not storage_class:
+        raise CLIError(
+            "write target is not configured; set OAA_INSTANCE_ID and OAA_STORAGE_CLASS="
+            "persistent (use --allow-ephemeral only for explicit test targets)"
+        )
+    if storage_class == "ephemeral" and not args.allow_ephemeral:
+        raise CLIError(
+            f"write target {instance_id!r} is ephemeral; use --allow-ephemeral only for explicit test/development writes"
+        )
+    if storage_class != "persistent" and storage_class != "ephemeral":
+        raise CLIError(f"write target has unsupported storage class: {storage_class!r}")
+    return instance
+
+
+def _artifact_url(public_url: str | None, artifact_id: str) -> tuple[str | None, str | None]:
+    if not public_url:
+        return None, "public_url_not_configured"
+    parsed = urlsplit(public_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None, "public_url_invalid"
+    return f"{public_url.rstrip('/')}/#/artifact/{quote(artifact_id, safe='')}", None
+
+
+def _verify_created_artifact(args: argparse.Namespace, result: dict[str, Any], content: str) -> dict[str, Any]:
+    artifact_id = result.get("id")
+    version_id = result.get("created_version_id") or result.get("current_version_id")
+    if not isinstance(artifact_id, str) or not isinstance(version_id, str):
+        raise CLIError("create response did not contain artifact and current version IDs")
+    artifact = _request(
+        args.base_url,
+        "GET",
+        f"/api/artifacts/{quote(artifact_id, safe='')}",
+        token=args.token,
+    )[1]
+    version = _request(
+        args.base_url,
+        "GET",
+        f"/api/versions/{quote(version_id, safe='')}",
+        token=args.token,
+    )[1]
+    expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    readback_content = version.get("content")
+    readback_hash = hashlib.sha256(readback_content.encode("utf-8")).hexdigest() if isinstance(readback_content, str) else None
+    stored_hash = version.get("content_hash")
+    stored_hash_match = stored_hash == readback_hash
+    content_match = readback_hash == expected_hash
+    hash_match = stored_hash_match and content_match
+    current_match = artifact.get("current_version_id") == version_id
+    replay = not current_match and result.get("created_version_id") != result.get("current_version_id")
+    if not hash_match or (not current_match and not replay):
+        raise CLIError(
+            "create verification failed: "
+            f"content_hash_match={hash_match}, current_version_match={current_match}"
+        )
+    public_url, public_url_reason = _artifact_url(args.public_url, artifact_id)
+    return {
+        **result,
+        "artifact_url": public_url,
+        "artifact_url_reason": public_url_reason,
+        "verification": {
+            "verified": True,
+            "artifact_id": artifact_id,
+            "version_id": version_id,
+            "content_hash": expected_hash,
+            "content_hash_match": True,
+            "readback_content_match": content_match,
+            "stored_content_hash_match": stored_hash_match,
+            "current_version_match": current_match,
+            "idempotent_replay": replay,
+        },
+    }
+
+
+def _doctor(args: argparse.Namespace) -> dict[str, Any]:
+    checks: dict[str, dict[str, Any]] = {}
+
+    def read_check(name: str, path: str, expected_status: str) -> None:
+        try:
+            payload = _request(args.base_url, "GET", path, token=args.token)[1]
+            checks[name] = {"ok": payload.get("status") == expected_status, "status": payload.get("status")}
+        except CLIError as error:
+            checks[name] = {"ok": False, "error": str(error)}
+
+    read_check("api", "/healthz", "ok")
+    read_check("readiness", "/readyz", "ready")
+    try:
+        instance = _request(args.base_url, "GET", "/api/instance", token=args.token)[1]
+        identity_ok = bool(instance.get("instance_id") and instance.get("storage_class"))
+        if args.expect_instance_id:
+            identity_ok = identity_ok and instance.get("instance_id") == args.expect_instance_id
+        if args.expect_storage_class:
+            identity_ok = identity_ok and instance.get("storage_class") == args.expect_storage_class
+        checks["instance"] = {
+            "ok": identity_ok,
+            "instance_id": instance.get("instance_id"),
+            "storage_class": instance.get("storage_class"),
+        }
+    except CLIError as error:
+        checks["instance"] = {"ok": False, "error": str(error)}
+
+    public_url, reason = _artifact_url(args.public_url, "diagnostic")
+    checks["public_url"] = {
+        "ok": public_url is not None,
+        "configured": bool(args.public_url),
+        "reason": reason,
+    }
+    return {"ok": all(check["ok"] for check in checks.values()), "checks": checks}
+
+
+def _smoke(args: argparse.Namespace) -> dict[str, Any]:
+    _ensure_write_target(args)
+    smoke_id = str(uuid.uuid4())
+    content = f"Open Agent Artifacts synthetic smoke payload {smoke_id}"
+    created: dict[str, Any] | None = None
+    checks: dict[str, dict[str, Any]] = {}
+    try:
+        created = _request(
+            args.base_url,
+            "POST",
+            "/api/artifacts",
+            {
+                "title": f"Synthetic smoke {smoke_id}",
+                "kind": "text",
+                "content": content,
+                "created_by": "artifactctl-smoke",
+            },
+            args.token,
+            smoke_id,
+            "artifactctl-smoke",
+            smoke_id,
+            smoke_id,
+        )[1]
+        assert created is not None
+        verified = _verify_created_artifact(args, created, content)
+        checks["api"] = {"ok": True, "verification": verified["verification"]}
+        if args.public_url:
+            try:
+                public_health = _request(args.public_url, "GET", "/healthz", token=None)[1]
+                public_root = urlopen(
+                    Request(args.public_url.rstrip("/") + "/", headers={"Accept": "text/html"}),
+                    timeout=10,
+                )
+                with public_root:
+                    root_status = public_root.status
+                public_artifact_url, _ = _artifact_url(args.public_url, created["id"])
+                checks["route"] = {
+                    "ok": public_health.get("status") == "ok" and root_status == 200,
+                    "status": public_health.get("status"),
+                    "root_status": root_status,
+                    "artifact_url": public_artifact_url,
+                }
+            except (CLIError, OSError, ValueError) as error:
+                checks["route"] = {"ok": False, "status": "error", "error": str(error)}
+        else:
+            checks["route"] = {"ok": None, "status": "not_run", "reason": "public_url_not_configured"}
+        checks["ui"] = {"ok": None, "status": "not_run", "reason": "browser_check_not_configured"}
+    except CLIError as error:
+        checks["api"] = {"ok": False, "status": "error", "error": str(error)}
+        checks["route"] = {"ok": False, "status": "not_run", "reason": "api_check_failed"}
+        checks["ui"] = {"ok": None, "status": "not_run", "reason": "api_check_failed"}
+    finally:
+        artifact_id = created.get("id") if created else None
+        if artifact_id is None:
+            try:
+                candidates = _request(
+                    args.base_url,
+                    "GET",
+                    "/api/search?" + urlencode({"q": smoke_id, "limit": 20}),
+                    token=args.token,
+                )[1].get("items", [])
+                matches = [
+                    item["artifact_id"]
+                    for item in candidates
+                    if item.get("type") == "artifact" and item.get("title") == f"Synthetic smoke {smoke_id}"
+                ]
+                if len(matches) == 1:
+                    artifact_id = matches[0]
+            except CLIError:
+                artifact_id = None
+        if artifact_id:
+            try:
+                _request(
+                    args.base_url,
+                    "POST",
+                    f"/api/artifacts/{quote(artifact_id, safe='')}/archive",
+                    {},
+                    args.token,
+                    None,
+                    "artifactctl-smoke",
+                    smoke_id,
+                    str(uuid.uuid4()),
+                )
+                archived = _request(
+                    args.base_url,
+                    "GET",
+                    f"/api/artifacts/{quote(artifact_id, safe='')}",
+                    token=args.token,
+                )[1]
+                checks["cleanup"] = {"ok": bool(archived.get("archived_at")), "archived": bool(archived.get("archived_at"))}
+            except CLIError as error:
+                checks["cleanup"] = {"ok": False, "error": str(error)}
+        else:
+            checks["cleanup"] = {
+                "ok": False,
+                "status": "unknown",
+                "reason": "synthetic_artifact_id_not_recovered",
+            }
+    required_checks = ["api", "cleanup"] + (["route"] if args.public_url else [])
+    return {
+        "ok": all(checks[name].get("ok") is True for name in required_checks),
+        "complete": all(check.get("ok") is not None for check in checks.values()),
+        "artifact_id": created.get("id") if created else None,
+        "checks": checks,
+    }
+
+
 def _check_anchor(anchor: Any, content: str, comment_id: str, source_version_id: str, target_version_id: str) -> dict[str, Any]:
     if not isinstance(anchor, dict):
         return {
@@ -176,6 +425,7 @@ def _check_anchor(anchor: Any, content: str, comment_id: str, source_version_id:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Open Agent Artifacts API client")
     parser.add_argument("--base-url", default=os.environ.get("OAA_URL", "http://127.0.0.1:8765"))
+    parser.add_argument("--public-url", default=os.environ.get("OAA_PUBLIC_URL"))
     parser.add_argument("--token", default=os.environ.get("OAA_API_TOKEN"))
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -189,6 +439,8 @@ def _build_parser() -> argparse.ArgumentParser:
     create.add_argument("--agent-id")
     create.add_argument("--agent-run-id")
     create.add_argument("--operation-id")
+    _add_write_safety_options(create)
+    create.add_argument("--verify", action="store_true", help="read back and verify the created version")
 
     listing = subparsers.add_parser("list", help="list artifacts")
     listing.add_argument("--query")
@@ -215,6 +467,7 @@ def _build_parser() -> argparse.ArgumentParser:
     publish.add_argument("--agent-run-id")
     publish.add_argument("--operation-id")
     publish.add_argument("--source-comment-id")
+    _add_write_safety_options(publish)
 
     feedback = subparsers.add_parser("feedback", help="add feedback to a version")
     feedback.add_argument("version_id")
@@ -228,6 +481,7 @@ def _build_parser() -> argparse.ArgumentParser:
     feedback.add_argument("--agent-id")
     feedback.add_argument("--agent-run-id")
     feedback.add_argument("--operation-id")
+    _add_write_safety_options(feedback)
 
     address = subparsers.add_parser("address", help="change feedback status")
     address.add_argument("comment_id")
@@ -238,6 +492,7 @@ def _build_parser() -> argparse.ArgumentParser:
     address.add_argument("--agent-id")
     address.add_argument("--agent-run-id")
     address.add_argument("--operation-id")
+    _add_write_safety_options(address)
     comments = subparsers.add_parser("comments", help="inspect feedback")
     comments_subparsers = comments.add_subparsers(dest="comments_command", required=True)
     comments_list = comments_subparsers.add_parser("list", help="list comments")
@@ -286,35 +541,40 @@ def _build_parser() -> argparse.ArgumentParser:
     anchor_check.add_argument("comment_id")
     anchor_check.add_argument("--version", required=True)
     versions = subparsers.add_parser("versions", help="inspect artifact versions")
-    versions_subparsers = versions.add_subparsers(dest="versions_command", required=True)
-    versions_list = versions_subparsers.add_parser("list", help="list artifact versions")
-    versions_list.add_argument("artifact_id")
+    versions.add_argument("versions_args", nargs="+")
     archive = subparsers.add_parser("archive", help="archive an artifact")
     archive.add_argument("artifact_id")
     _add_operation_options(archive)
+    _add_write_safety_options(archive)
     rename = subparsers.add_parser("rename", help="rename an artifact")
     rename.add_argument("artifact_id")
     rename.add_argument("--title", required=True)
     _add_operation_options(rename)
+    _add_write_safety_options(rename)
     duplicate = subparsers.add_parser("duplicate", help="duplicate an artifact")
     duplicate.add_argument("artifact_id")
     duplicate.add_argument("--created-by", default="artifactctl")
     _add_operation_options(duplicate)
+    _add_write_safety_options(duplicate)
     restore = subparsers.add_parser("restore", help="restore a version as a new version")
     restore.add_argument("artifact_id")
     restore.add_argument("--version-id", required=True)
     restore.add_argument("--expected-current-version-id", required=True)
     restore.add_argument("--created-by", default="artifactctl")
     _add_operation_options(restore)
+    _add_write_safety_options(restore)
     pin = subparsers.add_parser("pin", help="pin an artifact")
     pin.add_argument("artifact_id")
     _add_operation_options(pin)
+    _add_write_safety_options(pin)
     unpin = subparsers.add_parser("unpin", help="unpin an artifact")
     unpin.add_argument("artifact_id")
     _add_operation_options(unpin)
+    _add_write_safety_options(unpin)
     visit = subparsers.add_parser("visit", help="record an artifact visit")
     visit.add_argument("artifact_id")
     _add_operation_options(visit)
+    _add_write_safety_options(visit)
     audit = subparsers.add_parser("audit", help="inspect operation audit records")
     audit_subparsers = audit.add_subparsers(dest="audit_command", required=True)
     audit_list = audit_subparsers.add_parser("list", help="list operations")
@@ -326,19 +586,31 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_metadata_options(metadata)
     metadata.add_argument("--actor", default="artifactctl")
     _add_operation_options(metadata)
+    _add_write_safety_options(metadata)
     install = subparsers.add_parser("install-agent-skill", help="install the bundled agent skill")
     install.add_argument("--agent", required=True)
     install.add_argument("--hermes-home")
     install.add_argument("--force", action="store_true")
+    doctor = subparsers.add_parser("doctor", help="run read-only service diagnostics")
+    doctor.add_argument("--expect-instance-id")
+    doctor.add_argument("--expect-storage-class", choices=["persistent", "ephemeral"])
+    smoke = subparsers.add_parser("smoke", help="run an explicit synthetic write/read/cleanup check")
+    _add_write_safety_options(smoke)
     return parser
 
 
 def _run(args: argparse.Namespace) -> Any:
+    if args.command in MUTATING_COMMANDS:
+        _ensure_write_target(args)
     if args.command == "install-agent-skill":
         try:
             return install_agent_skill(args.agent, home=args.hermes_home, force=args.force)
         except AgentSkillInstallError as error:
             raise CLIError(str(error)) from error
+    if args.command == "doctor":
+        return _doctor(args)
+    if args.command == "smoke":
+        return _smoke(args)
     if args.command == "metadata":
         metadata = _read_metadata(args.metadata_json, args.metadata_file)
         if metadata is None:
@@ -427,10 +699,16 @@ def _run(args: argparse.Namespace) -> Any:
             params["cursor"] = args.cursor
         return _request(args.base_url, "GET", "/api/search?" + urlencode(params, doseq=True), token=args.token)[1]
     if args.command == "versions":
+        if len(args.versions_args) == 1:
+            artifact_id = args.versions_args[0]
+        elif len(args.versions_args) == 2 and args.versions_args[0] == "list":
+            artifact_id = args.versions_args[1]
+        else:
+            raise CLIError("use: artifactctl versions ARTIFACT_ID (or versions list ARTIFACT_ID)")
         return _request(
             args.base_url,
             "GET",
-            f"/api/artifacts/{quote(args.artifact_id, safe='')}/versions",
+            f"/api/artifacts/{quote(artifact_id, safe='')}/versions",
             token=args.token,
         )[1]
     if args.command == "audit" and args.audit_command == "list":
@@ -533,7 +811,11 @@ def _run(args: argparse.Namespace) -> Any:
             args.agent_run_id,
             args.operation_id,
         )
-        return result
+        if args.verify:
+            if content is None:
+                raise CLIError("create verification requires content or file content")
+            return _verify_created_artifact(args, result, content)
+        return {**result, "artifact_url": None, "artifact_url_reason": "create_verify_required"}
     if args.command == "list":
         params = {}
         if args.query:
@@ -628,6 +910,8 @@ def main(argv: list[str] | None = None) -> int:
             print(result, end="")
         else:
             print(json.dumps(result, ensure_ascii=False, indent=2))
+        if args.command in {"doctor", "smoke"} and isinstance(result, dict) and result.get("ok") is False:
+            return 1
     except CLIError as error:
         print(json.dumps({"error": "cli_error", "message": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 1
