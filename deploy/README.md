@@ -24,9 +24,17 @@ sudo install -m 0644 open-agent-artifacts.service /etc/systemd/system/open-agent
 sudo systemctl daemon-reload
 sudo systemctl enable --now open-agent-artifacts.service
 curl --fail http://127.0.0.1:8765/readyz
+artifactctl --base-url http://127.0.0.1:8765 doctor --expect-instance-id production --expect-storage-class persistent
 ```
 
 `ProtectHome=true` is intentional. The service must not read a user's home directory. Runtime write access is restricted to `/var/lib/open-agent-artifacts`.
+
+The service template identifies this deployment as the persistent production
+instance with `OAA_INSTANCE_ID=production` and
+`OAA_STORAGE_CLASS=persistent`. Put the approved private public URL in the
+uncommitted environment file as `OAA_PUBLIC_URL=...`; never put a real hostname
+or token in this repository. The API origin (`OAA_URL`, normally the loopback
+service or its approved private proxy) and public artifact origin are separate.
 
 ## Tailscale access
 

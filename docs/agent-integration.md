@@ -23,7 +23,27 @@ The command resolves the active `HERMES_HOME` profile, creates missing directori
 - The Artifacts service is running and reachable.
 - `artifactctl` is installed from a reviewed release.
 - `OAA_URL` points to the private service URL, for example `http://127.0.0.1:8765` or an approved private HTTPS proxy.
+- `OAA_PUBLIC_URL` is the separate user-facing artifact origin; it is not used for API writes.
 - If authentication is enabled, `OAA_API_TOKEN` is available to the agent outside the repository.
+
+The service must expose an explicit instance contract. Production should use a
+stable instance ID and persistent storage; ephemeral targets are for tests only:
+
+```text
+OAA_INSTANCE_ID=production
+OAA_STORAGE_CLASS=persistent
+OAA_PUBLIC_URL=https://artifacts.example.invalid
+```
+
+Check the target without writing data:
+
+```bash
+artifactctl --base-url "$OAA_URL" --public-url "$OAA_PUBLIC_URL" doctor \
+  --expect-instance-id production --expect-storage-class persistent
+```
+
+Mutating commands fail closed when the instance identity is missing. They also
+refuse `ephemeral` storage unless `--allow-ephemeral` is explicitly supplied.
 
 ## Create an artifact
 
@@ -32,8 +52,14 @@ artifactctl --base-url "$OAA_URL" create \
   --title "Reviewable report" \
   --kind markdown \
   --file report.md \
-  --created-by agent
+  --created-by agent \
+  --verify
 ```
+
+`create --verify` reads the created artifact and version back, checks the
+content hash and current-version identity, and only then returns a usable
+`artifact_url`. Without `--verify`, the response deliberately contains
+`artifact_url: null`.
 
 Structured metadata is optional and uses schema version 1. Unknown fields are rejected; values are bounded and returned on artifact, list, search, and show responses:
 
@@ -102,6 +128,16 @@ artifactctl --base-url "$OAA_URL" search "deployment"
 artifactctl --base-url "$OAA_URL" search "Tailscale" --kind markdown
 artifactctl --base-url "$OAA_URL" search "clarify" --comment-status open
 ```
+
+Run the explicit synthetic write/read/cleanup check only when desired:
+
+```bash
+artifactctl --base-url "$OAA_URL" --public-url "$OAA_PUBLIC_URL" smoke
+```
+
+Smoke output separates API, public-route, UI, and cleanup status. A missing
+public URL leaves route/UI checks as `not_run`; it is never reported as a UI
+success. The synthetic artifact is archived and read back after cleanup.
 
 Results identify whether the match is an `artifact` or a `comment`, include stable IDs and bounded excerpts, and return a `next_cursor` for pagination. Search cursors are bound to the query and filters.
 
@@ -260,6 +296,7 @@ artifactctl --base-url "$OAA_URL" audit list --agent-id my-agent
 
 - `GET /healthz`, `GET /readyz`
 - `GET /api/me`
+- `GET /api/instance`
 - `GET /api/artifacts`, `POST /api/artifacts`
 - `GET /api/artifacts/{id}`, `GET /api/artifacts/{id}/versions`, `GET /api/artifacts/{id}/comments`
 - `POST /api/artifacts/{id}/versions`, `POST /api/artifacts/{id}/pin`, `POST /api/artifacts/{id}/unpin`

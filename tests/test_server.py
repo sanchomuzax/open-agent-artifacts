@@ -33,7 +33,7 @@ def request(server, method, path, payload=None, token=None, headers=None, raw_bo
 
 @pytest.fixture
 def running_server(tmp_path):
-    server = create_server(tmp_path / "api.db")
+    server = create_server(tmp_path / "api.db", instance_id="test-api", storage_class="persistent")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -332,8 +332,9 @@ def test_main_passes_allowed_hosts_from_environment(monkeypatch, tmp_path):
         def server_close(self):
             pass
 
-    def fake_create_server(*args):
+    def fake_create_server(*args, **kwargs):
         captured["args"] = args
+        captured["kwargs"] = kwargs
         return FakeServer()
 
     monkeypatch.setenv("OAA_ALLOWED_HOSTS", "localhost,public.example")
@@ -342,3 +343,4 @@ def test_main_passes_allowed_hosts_from_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["oaa-server", "--db", str(tmp_path / "main.db")])
     server_module.main()
     assert captured["args"][-1] == ["localhost", "public.example"]
+    assert captured["kwargs"] == {"instance_id": None, "storage_class": None, "public_url": None}

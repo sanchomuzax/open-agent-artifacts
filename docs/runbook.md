@@ -15,6 +15,19 @@ The service binds to `127.0.0.1` by default and stores runtime data outside the 
 oaa-server --db ~/.local/share/open-agent-artifacts/artifacts.db --host 127.0.0.1 --port 8765
 ```
 
+Production-like runs must set an explicit target identity outside the
+repository:
+
+```text
+OAA_INSTANCE_ID=production
+OAA_STORAGE_CLASS=persistent
+OAA_PUBLIC_URL=https://artifacts.example.invalid
+```
+
+Use `artifactctl doctor` before writes and `artifactctl create --verify` when
+creating a deliverable. Use `artifactctl smoke` only as an explicit synthetic
+check; it archives and verifies cleanup of its own test artifact.
+
 For a protected deployment, set `OAA_API_TOKEN` outside the repository. Never place the token in this file or in a shell history that is committed.
 
 ## Backup and restore

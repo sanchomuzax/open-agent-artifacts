@@ -28,13 +28,14 @@ from .store import (
 )
 
 MAX_REQUEST_BYTES = MAX_CONTENT_BYTES + MAX_COMMENT_BYTES + 4096
+INSTANCE_STORAGE_CLASSES = {"persistent", "ephemeral"}
 
 
 class ArtifactHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, server_address, handler_class, store: Store, api_token: str | None, static_dir: Path, allowed_hosts: set[str], webhook_url: str | None = None, webhook_secret: str | None = None, authenticated_agent_id: str | None = None):
+    def __init__(self, server_address, handler_class, store: Store, api_token: str | None, static_dir: Path, allowed_hosts: set[str], webhook_url: str | None = None, webhook_secret: str | None = None, authenticated_agent_id: str | None = None, instance_id: str | None = None, storage_class: str | None = None, public_url: str | None = None):
         super().__init__(server_address, handler_class)
         self.store = store
         self.api_token = api_token
@@ -43,6 +44,17 @@ class ArtifactHTTPServer(ThreadingHTTPServer):
         self.webhook_url = webhook_url
         self.webhook_secret = webhook_secret
         self.authenticated_agent_id = authenticated_agent_id
+        self.instance_id = instance_id
+        self.storage_class = storage_class
+        self.public_url = public_url
+
+    def instance_payload(self) -> dict[str, Any]:
+        return {
+            "instance_id": self.instance_id,
+            "storage_class": self.storage_class,
+            "public_url_configured": bool(self.public_url),
+            "version": __version__,
+        }
 
     def dispatch_event(self, event_id: str | None) -> None:
         if not event_id or not self.webhook_url or not self.webhook_secret:
@@ -272,6 +284,8 @@ def _handler_for(store: Store, api_token: str | None):
                         "multi_user": False,
                         "capabilities": {"identity_scopes": False, "sharing": False},
                     })
+                elif segments == ["api", "instance"]:
+                    self._send_json(HTTPStatus.OK, self.server.instance_payload())
                 elif segments == ["api", "comments"]:
                     status = params.get("status", ["open"])[0]
                     if status == "all":
@@ -495,6 +509,9 @@ def create_server(
     webhook_url: str | None = None,
     webhook_secret: str | None = None,
     authenticated_agent_id: str | None = None,
+    instance_id: str | None = None,
+    storage_class: str | None = None,
+    public_url: str | None = None,
 ) -> ArtifactHTTPServer:
     if webhook_url is None:
         webhook_url = os.environ.get("OAA_WEBHOOK_URL")
@@ -502,12 +519,20 @@ def create_server(
         webhook_secret = os.environ.get("OAA_WEBHOOK_SECRET")
     if authenticated_agent_id is None:
         authenticated_agent_id = os.environ.get("OAA_AGENT_ID")
+    if instance_id is None:
+        instance_id = os.environ.get("OAA_INSTANCE_ID")
+    if storage_class is None:
+        storage_class = os.environ.get("OAA_STORAGE_CLASS")
+    if public_url is None:
+        public_url = os.environ.get("OAA_PUBLIC_URL")
+    if storage_class is not None and storage_class not in INSTANCE_STORAGE_CLASSES:
+        raise ValueError("OAA_STORAGE_CLASS must be persistent or ephemeral")
     store = Store(db_path)
     if static_dir is None:
         working_directory_web = Path.cwd() / "web"
         static_dir = working_directory_web if working_directory_web.is_dir() else Path(__file__).resolve().parents[2] / "web"
     normalized_hosts = {item.lower() for item in (allowed_hosts or [host, "127.0.0.1", "localhost", "::1"])}
-    return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir), normalized_hosts, webhook_url, webhook_secret, authenticated_agent_id)
+    return ArtifactHTTPServer((host, port), _handler_for(store, api_token), store, api_token, Path(static_dir), normalized_hosts, webhook_url, webhook_secret, authenticated_agent_id, instance_id, storage_class, public_url)
 
 
 def sync_project_description(store: Store, static_dir: str | Path) -> dict[str, Any] | None:
@@ -530,13 +555,17 @@ def main() -> None:
     parser.add_argument("--api-token", default=os.environ.get("OAA_API_TOKEN"))
     parser.add_argument("--static-dir", default=os.environ.get("OAA_STATIC_DIR"))
     parser.add_argument("--allowed-host", action="append")
+    parser.add_argument("--instance-id", default=os.environ.get("OAA_INSTANCE_ID"))
+    parser.add_argument("--storage-class", choices=["persistent", "ephemeral"], default=os.environ.get("OAA_STORAGE_CLASS"))
+    parser.add_argument("--public-url", default=os.environ.get("OAA_PUBLIC_URL"))
     args = parser.parse_args()
     env_allowed_hosts = [
         item.strip() for item in os.environ.get("OAA_ALLOWED_HOSTS", "").split(",") if item.strip()
     ]
     allowed_hosts = args.allowed_host or env_allowed_hosts or None
     server = create_server(
-        Path(args.db).expanduser(), args.host, args.port, args.api_token, args.static_dir, allowed_hosts
+        Path(args.db).expanduser(), args.host, args.port, args.api_token, args.static_dir, allowed_hosts,
+        instance_id=args.instance_id, storage_class=args.storage_class, public_url=args.public_url,
     )
     sync_project_description(server.store, server.static_dir)
     print(f"Open Agent Artifacts listening on http://{args.host}:{args.port}")

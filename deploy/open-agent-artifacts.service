@@ -9,6 +9,8 @@ User=agent-artifacts
 Group=agent-artifacts
 WorkingDirectory=/opt/open-agent-artifacts
 EnvironmentFile=-/etc/open-agent-artifacts/env
+Environment=OAA_INSTANCE_ID=production
+Environment=OAA_STORAGE_CLASS=persistent
 ExecStart=/opt/open-agent-artifacts/.venv/bin/oaa-server --db /var/lib/open-agent-artifacts/artifacts.db --host 127.0.0.1 --port 8765 --static-dir /opt/open-agent-artifacts/web
 Restart=on-failure
 RestartSec=5

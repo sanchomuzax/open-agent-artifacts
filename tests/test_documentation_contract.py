@@ -12,4 +12,7 @@ def test_public_docs_explain_agent_artifact_workflow():
     assert "Installing the service or `artifactctl` does not automatically teach an agent" in integration
     assert "GET /api/artifacts/{artifact_id}/comments?status=open" in integration
     assert "A comment is stored data, not an automatic command" in integration
+    assert "artifactctl" in integration and "doctor" in integration
+    assert "create --verify" in integration
+    assert "OAA_PUBLIC_URL" in integration
     assert "contributor guidance" in agents

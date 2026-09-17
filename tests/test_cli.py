@@ -9,7 +9,7 @@ from open_agent_artifacts.server import create_server
 
 @pytest.fixture
 def cli_server(tmp_path):
-    server = create_server(tmp_path / "cli.db")
+    server = create_server(tmp_path / "cli.db", instance_id="test-cli", storage_class="persistent")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -203,6 +203,8 @@ def test_cli_covers_artifact_lifecycle_operations(cli_server, capsys):
     )
     versions = run_cli(cli_server, capsys, "versions", "list", created["id"])
     assert [item["id"] for item in versions] == [created["current_version_id"]]
+    direct_versions = run_cli(cli_server, capsys, "versions", created["id"])
+    assert [item["id"] for item in direct_versions] == [created["current_version_id"]]
 
     renamed = run_cli(cli_server, capsys, "rename", created["id"], "--title", "Renamed report")
     assert renamed["title"] == "Renamed report"

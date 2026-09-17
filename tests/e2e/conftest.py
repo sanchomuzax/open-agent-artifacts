@@ -39,7 +39,12 @@ def browser(playwright_instance: Playwright):
 
 @pytest.fixture
 def running_server(tmp_path: Path):
-    server = create_server(tmp_path / "artifacts.db", static_dir=ROOT / "web")
+    server = create_server(
+        tmp_path / "artifacts.db",
+        static_dir=ROOT / "web",
+        instance_id="test-e2e",
+        storage_class="persistent",
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

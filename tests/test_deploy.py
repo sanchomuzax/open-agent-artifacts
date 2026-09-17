@@ -11,5 +11,7 @@ def test_service_template_is_loopback_and_hardened():
     assert "NoNewPrivileges=true" in service
     assert "ProtectSystem=strict" in service
     assert "ProtectHome=true" in service
+    assert "OAA_INSTANCE_ID=production" in service
+    assert "OAA_STORAGE_CLASS=persistent" in service
     assert "Funnel" not in service
     assert "/home/" not in service

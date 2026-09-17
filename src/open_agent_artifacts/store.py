@@ -197,6 +197,7 @@ class Store:
                     key TEXT NOT NULL,
                     request_hash TEXT NOT NULL,
                     result_id TEXT NOT NULL,
+                    result_version_id TEXT,
                     created_at TEXT NOT NULL DEFAULT ({_now_sql()}),
                     PRIMARY KEY(scope, key)
                 );
@@ -270,6 +271,9 @@ class Store:
             operation_columns = {row["name"] for row in connection.execute("PRAGMA table_info(operations)").fetchall()}
             if "source_comment_id" not in operation_columns:
                 connection.execute("ALTER TABLE operations ADD COLUMN source_comment_id TEXT")
+            idempotency_columns = {row["name"] for row in connection.execute("PRAGMA table_info(idempotency_keys)").fetchall()}
+            if "result_version_id" not in idempotency_columns:
+                connection.execute("ALTER TABLE idempotency_keys ADD COLUMN result_version_id TEXT")
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_artifacts_metadata_project ON artifacts(json_extract(metadata_json, '$.project'))"
             )
@@ -689,6 +693,14 @@ class Store:
             existing_id = self._idempotent_result(connection, "create", idempotency_key, request_hash)
             if existing_id:
                 result = self._artifact_dict(self._get_artifact_row(connection, existing_id))
+                replay = connection.execute(
+                    "SELECT result_version_id FROM idempotency_keys WHERE scope = 'create' AND key = ? AND request_hash = ?",
+                    (idempotency_key, request_hash),
+                ).fetchone()
+                original_version_id = replay["result_version_id"] if replay and replay["result_version_id"] else result["current_version_id"]
+                version = self._get_version_row(connection, original_version_id)
+                result["created_version_id"] = original_version_id
+                result["content_hash"] = version["content_hash"]
                 operation = connection.execute(
                     "SELECT id FROM operations WHERE resource_type = 'artifact' AND resource_id = ? AND request_hash = ? LIMIT 1",
                     (existing_id, request_hash),
@@ -724,9 +736,9 @@ class Store:
             )
             if idempotency_key:
                 connection.execute(
-                    """INSERT INTO idempotency_keys(scope, key, request_hash, result_id)
-                       VALUES ('create', ?, ?, ?)""",
-                    (idempotency_key, request_hash, artifact_id),
+                    """INSERT INTO idempotency_keys(scope, key, request_hash, result_id, result_version_id)
+                       VALUES ('create', ?, ?, ?, ?)""",
+                    (idempotency_key, request_hash, artifact_id, version_id),
                 )
             recorded_operation_id = self._record_operation(
                 connection,
@@ -756,6 +768,8 @@ class Store:
                 payload={"version_sequence": 1},
             )
             result = self._artifact_dict(self._get_artifact_row(connection, artifact_id))
+            result["created_version_id"] = version_id
+            result["content_hash"] = content_hash
             result["operation_id"] = recorded_operation_id
             result["event_id"] = event["event_id"]
             return result
