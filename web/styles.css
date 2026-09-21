@@ -160,6 +160,8 @@ kbd { border: 1px solid var(--line); border-radius: .25rem; padding: .08rem .3re
   .markdown-table th { color: #174f49; background: #e8f3f0; }
   .markdown-table th, .markdown-table td { border-color: #c4d0d2; }
   .markdown-table tbody tr:nth-child(even) td { background: #f3f8f7; }
+  .markdown-table .inline-code { color: #164e49; background: #d7ebe7; }
+  .markdown-table a { color: #0d5c50; }
 }
 .presentation-label { margin: 0 0 .6rem; color: var(--yellow); font-size: .76rem; font-weight: 750; }
 .html-frame { display: block; width: 100%; min-height: 20rem; overflow: hidden; border: 0; background: #101820; }
