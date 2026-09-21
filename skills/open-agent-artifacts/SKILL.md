@@ -1,7 +1,7 @@
 ---
 name: open-agent-artifacts
 description: "Use when creating or reviewing Open Agent Artifacts."
-version: 0.2.12
+version: 0.2.13
 metadata:
   hermes:
     tags: [artifacts, review, versioning, feedback, metadata]

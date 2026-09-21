@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.13 — 2026-09-21
+
+- Improve inline-code and link contrast inside Markdown tables in the light color scheme.
+- Add WCAG AA contrast regression coverage at mobile and desktop widths in both color schemes.
+
 ## 0.2.12 — 2026-09-17
 
 - Add explicit instance identity and storage-class reporting with fail-closed CLI write preflight.

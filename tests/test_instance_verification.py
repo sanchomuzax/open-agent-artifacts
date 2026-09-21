@@ -58,7 +58,7 @@ def test_instance_endpoint_exposes_redacted_identity_and_storage_class(tmp_path)
         "instance_id": "test-instance",
         "storage_class": "persistent",
         "public_url_configured": True,
-        "version": "0.2.12",
+        "version": "0.2.13",
     }
     assert "db" not in json.dumps(payload).lower()
     assert "token" not in json.dumps(payload).lower()
