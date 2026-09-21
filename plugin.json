@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "open-agent-artifacts",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "description": "Reviewable, versioned artifact workspace with anchored feedback and safe agent workflows.",
   "author": {
     "name": "Open Agent Artifacts contributors",
