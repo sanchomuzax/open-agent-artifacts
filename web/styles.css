@@ -140,11 +140,27 @@ kbd { border: 1px solid var(--line); border-radius: .25rem; padding: .08rem .3re
 .rendered-markdown h2 { font-size: 1.5rem; }
 .rendered-markdown h3 { font-size: 1.2rem; }
 .rendered-markdown p { margin: 0 0 1rem; }
-.rendered-markdown ul { margin: 0 0 1rem; padding-left: 1.4rem; }
+.rendered-markdown ul, .rendered-markdown ol { margin: 0 0 1rem; padding-left: 1.4rem; }
 .rendered-markdown blockquote { margin: 1rem 0; border-left: 3px solid var(--accent); padding-left: 1rem; color: var(--muted); }
 .rendered-markdown pre, .source-fallback { margin: 1rem 0; overflow: auto; border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; color: #d3e1e2; background: #080d12; font: .82rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rendered-markdown a { color: var(--accent); }
 .inline-code { border-radius: .25rem; padding: .1rem .25rem; color: var(--accent-2); background: #ffffff0c; }
+.markdown-table-container { max-width: 100%; margin: 1.2rem 0; overflow-x: auto; border: 1px solid var(--line); border-radius: .55rem; }
+.markdown-table { min-width: 34rem; width: 100%; border-collapse: collapse; color: var(--text); font-size: .9rem; }
+.markdown-table th, .markdown-table td { border-bottom: 1px solid var(--line); padding: .65rem .75rem; vertical-align: top; text-align: left; }
+.markdown-table th { color: var(--accent-2); background: var(--surface-2); font-size: .78rem; letter-spacing: .03em; }
+.markdown-table tbody tr:last-child td { border-bottom: 0; }
+.markdown-table tbody tr:nth-child(even) td { background: #ffffff05; }
+.markdown-table [data-align="left"] { text-align: left; }
+.markdown-table [data-align="center"] { text-align: center; }
+.markdown-table [data-align="right"] { text-align: right; }
+@media (prefers-color-scheme: light) {
+  .markdown-table-container { border-color: #c4d0d2; background: #ffffff; }
+  .markdown-table { color: #20343a; }
+  .markdown-table th { color: #174f49; background: #e8f3f0; }
+  .markdown-table th, .markdown-table td { border-color: #c4d0d2; }
+  .markdown-table tbody tr:nth-child(even) td { background: #f3f8f7; }
+}
 .presentation-label { margin: 0 0 .6rem; color: var(--yellow); font-size: .76rem; font-weight: 750; }
 .html-frame { display: block; width: 100%; min-height: 20rem; overflow: hidden; border: 0; background: #101820; }
 .markdown-code { overflow: auto; border-radius: .5rem; padding: .75rem; color: #c9e5df; background: #080d12; font: .8rem/1.5 ui-monospace, monospace; white-space: pre-wrap; }
