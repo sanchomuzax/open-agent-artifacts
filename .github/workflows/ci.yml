@@ -30,4 +30,6 @@ jobs:
       - name: Check bilingual project description version
         run: python scripts/check_description.py --root .
       - name: Check browser bundle syntax
-        run: node --check web/app.js
+        run: node --check web/app.js && node --check web/markdown-renderer.js
+      - name: Run Markdown renderer unit tests
+        run: node --test tests/markdown_renderer.test.mjs

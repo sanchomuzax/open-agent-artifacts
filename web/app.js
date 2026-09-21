@@ -28,6 +28,7 @@
   };
 
   const $ = (id) => document.getElementById(id);
+  const markdownRenderer = window.OAAMarkdownRenderer;
   const apiToken = () => localStorage.getItem("oaa_api_token") || "";
 
   function node(tag, className, text) {
@@ -123,101 +124,94 @@
     else history.pushState({ catalog: true }, "", `${location.pathname}${location.search}${hash}`);
   }
 
-  function safeUrl(value) {
-    try {
-      const url = new URL(value, location.origin);
-      return ["http:", "https:", "mailto:"].includes(url.protocol) ? url.href : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
   function anchorExact(anchor) {
     return anchor?.quote?.exact || anchor?.exact || "";
   }
 
-  function appendInline(parent, value) {
-    const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*]+\*|\[[^\]]+\]\([^\)]+\))/g;
-    let cursor = 0;
-    for (const match of value.matchAll(pattern)) {
-      const start = match.index || 0;
-      if (start > cursor) parent.append(document.createTextNode(value.slice(cursor, start)));
-      const token = match[0];
-      if (token.startsWith("**")) {
-        parent.append(node("strong", "", token.slice(2, -2)));
-      } else if (token.startsWith("`")) {
-        parent.append(node("code", "inline-code", token.slice(1, -1)));
-      } else if (token.startsWith("*")) {
-        parent.append(node("em", "", token.slice(1, -1)));
-      } else {
-        const link = token.match(/^\[([^\]]+)\]\(([^\)]+)\)$/);
-        const href = link && safeUrl(link[2]);
-        if (href) {
-          const anchor = node("a", "", link[1]);
-          anchor.href = href;
-          anchor.target = "_blank";
-          anchor.rel = "noreferrer noopener";
-          parent.append(anchor);
-        } else {
-          parent.append(document.createTextNode(token));
-        }
+  function appendInline(parent, tokens) {
+    (tokens || []).forEach((token) => {
+      if (token.type === "text") {
+        parent.append(document.createTextNode(token.text));
+      } else if (token.type === "code") {
+        parent.append(node("code", "inline-code", token.text));
+      } else if (token.type === "strong" || token.type === "emphasis") {
+        const element = node(token.type === "strong" ? "strong" : "em");
+        appendInline(element, token.children);
+        parent.append(element);
+      } else if (token.type === "link") {
+        const anchor = node("a");
+        anchor.href = token.href;
+        anchor.target = "_blank";
+        anchor.rel = "noreferrer noopener";
+        appendInline(anchor, token.children);
+        parent.append(anchor);
       }
-      cursor = start + token.length;
-    }
-    if (cursor < value.length) parent.append(document.createTextNode(value.slice(cursor)));
+    });
+  }
+
+  function tableCellFromTokens(tag, tokens, alignment) {
+    const cell = node(tag);
+    if (alignment) cell.dataset.align = alignment;
+    appendInline(cell, tokens);
+    return cell;
+  }
+
+  function renderParsedTable(block) {
+    const wrapper = node("div", "markdown-table-container");
+    const table = node("table", "markdown-table");
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    block.header.forEach((tokens, index) => {
+      const cell = tableCellFromTokens("th", tokens, block.alignments[index]);
+      cell.scope = "col";
+      headRow.append(cell);
+    });
+    head.append(headRow);
+    table.append(head);
+    const body = document.createElement("tbody");
+    block.rows.forEach((row) => {
+      const tableRow = document.createElement("tr");
+      row.forEach((tokens, index) => tableRow.append(tableCellFromTokens("td", tokens, block.alignments[index])));
+      body.append(tableRow);
+    });
+    table.append(body);
+    wrapper.append(table);
+    return wrapper;
   }
 
   function renderMarkdown(parent, source) {
-    const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
-    let index = 0;
-    while (index < lines.length) {
-      const line = lines[index];
-      if (!line.trim()) { index += 1; continue; }
-      if (/^```/.test(line)) {
-        const language = line.slice(3).trim();
-        const codeLines = [];
-        index += 1;
-        while (index < lines.length && !/^```/.test(lines[index])) codeLines.push(lines[index++]);
-        if (index < lines.length) index += 1;
+    const blocks = markdownRenderer.parseMarkdown(source, { baseUrl: location.origin });
+    blocks.forEach((block) => {
+      if (block.type === "code") {
         const pre = node("pre", "markdown-code");
-        if (language) pre.dataset.language = language;
-        pre.textContent = codeLines.join("\n");
+        if (block.language) pre.dataset.language = block.language;
+        pre.textContent = block.text;
         parent.append(pre);
-        continue;
-      }
-      const heading = line.match(/^(#{1,6})\s+(.+)$/);
-      if (heading) {
-        const h = node(`h${heading[1].length}`, "markdown-heading");
-        appendInline(h, heading[2]);
-        parent.append(h);
-        index += 1;
-        continue;
-      }
-      if (/^[-*+]\s+/.test(line)) {
-        const list = node("ul", "markdown-list");
-        while (index < lines.length && /^[-*+]\s+/.test(lines[index])) {
+      } else if (block.type === "table") {
+        parent.append(renderParsedTable(block));
+      } else if (block.type === "heading") {
+        const heading = node(`h${block.level}`, "markdown-heading");
+        appendInline(heading, block.children);
+        parent.append(heading);
+      } else if (block.type === "list") {
+        const list = node(block.ordered ? "ol" : "ul", "markdown-list");
+        if (block.ordered) list.start = block.start;
+        block.items.forEach((tokens) => {
           const item = node("li");
-          appendInline(item, lines[index].replace(/^[-*+]\s+/, ""));
+          appendInline(item, tokens);
           list.append(item);
-          index += 1;
-        }
+        });
         parent.append(list);
-        continue;
-      }
-      if (/^>\s?/.test(line)) {
+      } else if (block.type === "quote") {
         const quote = node("blockquote", "markdown-quote");
-        appendInline(quote, line.replace(/^>\s?/, ""));
+        appendInline(quote, block.children);
         parent.append(quote);
-        index += 1;
-        continue;
+      } else if (block.type === "paragraph") {
+        const paragraph = node("p", "markdown-paragraph");
+        appendInline(paragraph, block.children);
+        parent.append(paragraph);
       }
-      const paragraphLines = [line];
-      index += 1;
-      while (index < lines.length && lines[index].trim() && !/^(#{1,6})\s|^```|^[-*+]\s+|^>\s?/.test(lines[index])) paragraphLines.push(lines[index++]);
-      const paragraph = node("p", "markdown-paragraph");
-      appendInline(paragraph, paragraphLines.join(" "));
-      parent.append(paragraph);
-    }
+    });
   }
 
   function sanitizeHtmlForSandbox(source, versionId) {
